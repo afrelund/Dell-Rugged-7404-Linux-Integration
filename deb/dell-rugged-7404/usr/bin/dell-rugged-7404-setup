@@ -1,0 +1,32 @@
+#!/bin/sh
+# Simple status/repair window for the Dell Rugged 7404 fixes.
+while :; do
+    ts_timer=$(systemctl is-active egalax-touchscreen-check.timer 2>/dev/null)
+    spk=$(systemctl --user is-active dell-speaker-check.service 2>/dev/null)
+    choice=$(zenity --list --title="Dell Rugged 7404 Setup" --width=460 --height=340 \
+        --text="Touchscreen check timer: ${ts_timer}\nSpeaker helper (this user): ${spk}" \
+        --column=Action \
+        "Repair touchscreen now" \
+        "Start speaker helper" \
+        "Show status details" \
+        "Quit") || exit 0
+    case "$choice" in
+        "Repair touchscreen now")
+            if out=$(pkexec /usr/sbin/egalax-touchscreen-check 2>&1); then
+                zenity --info --text="Touchscreen check finished.\n\n$out" --width=420
+            else
+                zenity --error --text="Touchscreen check failed.\n\n$out" --width=420
+            fi ;;
+        "Start speaker helper")
+            if systemctl --user enable --now dell-speaker-check.service 2>&1; then
+                zenity --info --text="Speaker helper started." --width=300
+            else
+                zenity --error --text="Could not start the speaker helper." --width=300
+            fi ;;
+        "Show status details")
+            { /usr/bin/dell-speaker-check --status 2>&1
+              echo; systemctl status egalax-touchscreen-check.timer --no-pager 2>&1; } |
+                zenity --text-info --title="Status" --width=640 --height=420 ;;
+        *) exit 0 ;;
+    esac
+done

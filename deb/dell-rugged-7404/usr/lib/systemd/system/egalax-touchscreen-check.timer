@@ -1,0 +1,11 @@
+[Unit]
+Description=Check eGalax touchscreen after boot and periodically
+
+[Timer]
+OnBootSec=20s
+OnUnitInactiveSec=60s
+AccuracySec=5s
+Unit=egalax-touchscreen-check.service
+
+[Install]
+WantedBy=timers.target

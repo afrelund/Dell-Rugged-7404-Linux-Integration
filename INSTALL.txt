@@ -103,3 +103,12 @@ audio controls/alsamixer to set desired levels. No ALSA-state restore is done.
 Tests (no root privileges or hardware writes)
 ---------------------------------------------
     python3 -m unittest discover -s tests -v
+
+Debian package (simple GUI option)
+----------------------------------
+Build and install the .deb (adds a "Dell Rugged 7404 Setup" app to the menu):
+
+    sh deb/build.sh
+    sudo apt install ./dist/dell-rugged-7404_1.0.0_all.deb
+
+Remove with: sudo apt remove dell-rugged-7404. Do not combine with install.py.

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Dell Rugged 7404 Setup
+Comment=Touchscreen and speaker fixes for the Latitude 7404
+Exec=/usr/bin/dell-rugged-7404-setup
+Icon=preferences-system
+Categories=Settings;HardwareSettings;
+Terminal=false

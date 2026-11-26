@@ -1,0 +1,2 @@
+# Classify the eGalax touch-capable tablet node as a touchscreen.
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event[0-9]*", ENV{ID_VENDOR_ID}=="0eef", ENV{ID_MODEL_ID}=="0001", ENV{ID_INPUT_TABLET}=="1", ENV{ID_INPUT_TABLET}="", ENV{ID_INPUT_MOUSE}="", ENV{ID_INPUT_JOYSTICK}="", ENV{ID_INPUT_TOUCHSCREEN}="1"

@@ -1,0 +1,132 @@
+#!/usr/bin/python3
+"""Check only the eGalax 0eef:0001 touchscreen, not other input devices."""
+import argparse
+import fcntl
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+UDEVADM = "/usr/bin/udevadm"
+USB_ROOT = Path("/sys/bus/usb/devices")
+INPUT_ROOT = Path("/sys/class/input")
+RULE = Path("/etc/udev/rules.d/99-egalax-touchscreen.rules")
+
+
+def run(*args):
+    return subprocess.run(
+        args, check=True, capture_output=True, text=True, timeout=10
+    ).stdout
+
+
+def matches(device):
+    try:
+        return (
+            (device / "idVendor").read_text().strip() == "0eef"
+            and (device / "idProduct").read_text().strip() == "0001"
+        )
+    except FileNotFoundError:
+        return False
+
+
+def events(device):
+    root = device.resolve()
+    return [
+        event for event in INPUT_ROOT.glob("event*")
+        if root in event.resolve().parents
+    ]
+
+
+def classified(device):
+    for event in events(device):
+        properties = dict(
+            line.split("=", 1)
+            for line in run(
+                UDEVADM, "info", "--query=property", "--path=" + str(event)
+            ).splitlines()
+            if "=" in line
+        )
+        if properties.get("ID_INPUT_TOUCHSCREEN") == "1" and all(
+            properties.get(key) != "1"
+            for key in ("ID_INPUT_TABLET", "ID_INPUT_MOUSE", "ID_INPUT_JOYSTICK")
+        ):
+            return True
+    return False
+
+
+def reconnect(device):
+    # Discover the current interface: do not rely on event or USB bus numbers.
+    if not matches(device):
+        raise RuntimeError("Device identity changed; refusing to reconnect")
+    interfaces = list(USB_ROOT.glob(device.name + ":*"))
+    interfaces = [
+        interface for interface in interfaces
+        if (interface / "driver").resolve() == Path("/sys/bus/usb/drivers/usbhid")
+    ]
+    if len(interfaces) != 1:
+        raise RuntimeError("Expected exactly one eGalax usbhid interface")
+    interface = interfaces[0]
+    driver = interface.joinpath("driver").resolve()
+    (driver / "unbind").write_text(interface.name)
+    try:
+        time.sleep(1)
+    finally:
+        (driver / "bind").write_text(interface.name)
+    run(UDEVADM, "settle", "--timeout=10")
+    time.sleep(1)
+
+
+def check(args):
+    devices = [device for device in USB_ROOT.iterdir() if matches(device)]
+    if not devices:
+        raise RuntimeError("eGalax 0eef:0001 not detected; no other devices changed")
+    if not RULE.is_file():
+        raise RuntimeError("Touchscreen classification rule is missing: " + str(RULE))
+    for device in devices:
+        healthy = classified(device)
+        power = device / "power/control"
+        if args.check_only:
+            print(
+                f"{device.name}: touchscreen={'OK' if healthy else 'INCORRECT'}, "
+                f"USB power={power.read_text().strip()}"
+            )
+            if not healthy:
+                raise RuntimeError("Touchscreen classification requires repair")
+            continue
+        if power.read_text().strip() != "on":
+            power.write_text("on")
+            print(f"{device.name}: disabled USB autosuspend", flush=True)
+        if not healthy or args.reconnect:
+            run(UDEVADM, "control", "--reload-rules")
+            for event in events(device):
+                run(UDEVADM, "trigger", "--action=change", str(event))
+            run(UDEVADM, "settle", "--timeout=10")
+            reconnect(device)
+            if not classified(device):
+                raise RuntimeError("Touchscreen classification still incorrect after reconnect")
+            print(f"{device.name}: reconnected; touchscreen classification OK", flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--check-only", action="store_true", help="Report status without changes")
+    group.add_argument("--reconnect", action="store_true", help="Force a touchscreen-only reconnect")
+    args = parser.parse_args()
+    try:
+        if args.check_only:
+            check(args)
+        else:
+            with open("/run/egalax-touchscreen-check.lock", "w") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                check(args)
+    except BlockingIOError:
+        print("Another touchscreen check is already running")
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"eGalax check: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

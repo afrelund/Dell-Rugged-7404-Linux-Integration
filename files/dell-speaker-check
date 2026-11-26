@@ -1,0 +1,98 @@
+#!/usr/bin/python3
+"""Maintain the Latitude 7404 speaker workaround only while its jack is unplugged."""
+import argparse
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+
+AMIXER = "/usr/bin/amixer"
+JACK = "iface=CARD,name='Front Headphone Jack'"
+VOLUME = "iface=MIXER,name='Headphone Playback Volume'"
+
+
+def amixer(*arguments):
+    result = subprocess.run(
+        [AMIXER, "-c", "PCH", *arguments],
+        capture_output=True,
+        text=True,
+        timeout=3,
+        check=True,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    return result.stdout
+
+
+def values(text):
+    match = re.search(r"^\s*:\s*values=([^\n]+)", text, re.MULTILINE)
+    if not match:
+        raise RuntimeError("ALSA control value is unavailable; leaving mixer unchanged")
+    return match.group(1).strip().split(",")
+
+
+def jack_connected():
+    state = values(amixer("cget", JACK))
+    if state == ["on"]:
+        return True
+    if state == ["off"]:
+        return False
+    raise RuntimeError("Unknown headphone jack state; leaving mixer unchanged")
+
+
+def check(status_only=False):
+    if jack_connected():
+        return "Headphones connected; headphone settings left alone"
+    report = amixer("cget", VOLUME)
+    current = [int(value) for value in values(report)]
+    maximum = re.search(r"(?:^|,)max=(\d+)(?:,|\s)", report)
+    if maximum is None or not current:
+        raise RuntimeError("Headphone volume limits unavailable; leaving mixer unchanged")
+    target = int(maximum.group(1))
+    if status_only:
+        return f"Jack unplugged; Headphone volume={current}, speaker target={target}"
+    if all(value == target for value in current):
+        return "Speaker workaround healthy"
+    # Recheck just before writing. Never change the headphone mute switch.
+    if jack_connected():
+        return "Headphones connected; headphone settings left alone"
+    amixer("cset", VOLUME, ",".join([str(target)] * len(current)))
+    # Handle insertion during the short read/write window conservatively.
+    if jack_connected():
+        amixer("cset", VOLUME, ",".join(str(value) for value in current))
+        return "Jack changed during check; restored previous headphone volume"
+    return "Restored Headphone slider to 100% for built-in speaker"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--watch", action="store_true", help="Check every two seconds")
+    group.add_argument("--status", action="store_true", help="Read current state without changes")
+    args = parser.parse_args()
+    model = Path("/sys/class/dmi/id/product_name").read_text().strip()
+    if model != "Latitude 14 Rugged Extreme (7404)":
+        parser.error("This workaround is restricted to the Dell Latitude 7404")
+    previous = None
+    while True:
+        try:
+            message = check(status_only=args.status)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            message = f"Check deferred: {error}"
+            if not args.watch:
+                print(message, file=sys.stderr, flush=True)
+                return 1
+        if message != previous:
+            print(message, flush=True)
+            previous = message
+        if not args.watch:
+            return 0
+        time.sleep(2)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(0)

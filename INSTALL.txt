@@ -1,0 +1,105 @@
+Dell Latitude 14 Rugged Extreme (7404): Linux integration
+======================================================
+
+Scope
+-----
+Packages the working Ubuntu fixes from a Latitude 7404:
+
+* D-WAV/eGalax Titan6001 USB touchscreen, ID 0eef:0001.
+  A udev rule classifies its tablet node as a touchscreen. A system timer
+  checks after boot and periodically, disables autosuspend for this device,
+  and reconnects only its usbhid interface if classification needs repair.
+* Built-in HDA Intel PCH speaker.
+  A desktop-user service maintains the Headphone Playback Volume control at
+  its hardware maximum while the headphone jack is unplugged. This is the
+  working speaker-routing workaround, NOT a command to maximize Master volume.
+  It does not change the headphone mute switch. It leaves connected headphones
+  alone and restores the previous value if insertion is detected during a write.
+
+This is hardware-specific, not a generic Dell driver installer. Other models,
+different touchscreen IDs, external USB sound cards, other distributions, and
+different audio codecs are not supported or claimed tested. The original
+helpers were copied from a working machine; the packaged installer still needs
+an installation test on a separate matching laptop.
+
+Install
+-------
+Requires a systemd-based Ubuntu desktop, Python 3, sudo, udev and alsa-utils.
+If needed, install dependencies with:
+
+    sudo apt install python3 alsa-utils udev systemd sudo
+
+Download/clone the whole repository; do not run a downloaded script via a pipe.
+From its directory, as your logged-in desktop user (NOT sudo):
+
+    python3 install.py --dry-run
+    python3 install.py
+
+Review the source and dry-run output first. Installation requests sudo only
+for system operations. It refuses other laptop models, missing hardware/audio
+controls, and symlink destinations. It backs up replaced files in a unique
+root-owned /var/backups/dell-rugged-7404.* directory before replacing anything.
+Keep the printed backup directory. Repeat installs refresh the same six files
+and restart the services; they do not add duplicate services or udev rules.
+
+The first touchscreen repair can briefly interrupt touch input. Have the
+keyboard/touchpad available. Lower normal desktop volume before testing audio.
+The touchscreen timer runs system-wide; audio runs only in the installing
+user's desktop session. Each additional desktop user needs their own audio
+service. No reboot is required, though logging out/in may be needed if a desktop
+retains stale input classification.
+
+No packages are installed automatically. No personal paths, credentials,
+machine-wide ALSA state, microphone levels, HDMI settings, PipeWire profiles,
+kernel module options, or unrelated device rules are copied or changed.
+Enabling the timer changes only this installer's systemd enablement links.
+
+Check and troubleshoot
+----------------------
+    sudo /usr/local/sbin/egalax-touchscreen-check --check-only
+    ~/.local/bin/dell-speaker-check --status
+    systemctl status egalax-touchscreen-check.timer
+    systemctl --user status dell-speaker-check.service
+    journalctl -u egalax-touchscreen-check.service -b
+    journalctl --user -u dell-speaker-check.service -b
+
+Touch classification is checked automatically; actual touch behavior and
+speaker/headphone sound must still be tested by a person. This installer does
+not force a desktop output profile or unmute unrelated controls.
+
+Recovery / removal
+------------------
+If installation fails after writes start, it stops and prints the failed
+command. It leaves backups in place rather than guessing the previous service
+or mixer state. Stop its services before restoring files:
+
+    sudo systemctl disable --now egalax-touchscreen-check.timer
+    sudo systemctl stop egalax-touchscreen-check.service
+    systemctl --user disable --now dell-speaker-check.service
+
+The backup tree preserves each replaced file's absolute path underneath the
+printed backup directory. Restore only the corresponding backed-up files;
+remove only installer-owned files that did not previously exist. Installed
+paths are:
+
+    /etc/udev/rules.d/99-egalax-touchscreen.rules
+    /usr/local/sbin/egalax-touchscreen-check
+    /etc/systemd/system/egalax-touchscreen-check.service
+    /etc/systemd/system/egalax-touchscreen-check.timer
+    ~/.local/bin/dell-speaker-check
+    ~/.config/systemd/user/dell-speaker-check.service
+
+Then reload:
+
+    sudo systemctl daemon-reload
+    systemctl --user daemon-reload
+    sudo udevadm control --reload-rules
+
+Re-enable services only if they were enabled before installation. A reboot
+re-enumerates touch input and clears the helper's temporary USB power setting.
+Stopping the audio service does not undo its last mixer write; use the desktop
+audio controls/alsamixer to set desired levels. No ALSA-state restore is done.
+
+Tests (no root privileges or hardware writes)
+---------------------------------------------
+    python3 -m unittest discover -s tests -v

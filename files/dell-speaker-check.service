@@ -1,0 +1,16 @@
+[Unit]
+Description=Keep Dell Rugged speaker workaround active while headphones are unplugged
+After=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/bin/dell-speaker-check --watch
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=default.target

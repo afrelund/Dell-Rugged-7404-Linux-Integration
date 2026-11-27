@@ -16,7 +16,7 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
 2. Install it:
 
    ```sh
-   sudo apt install ./dell-rugged-7404_1.1.0_all.deb
+   sudo apt install ./dell-rugged-7404_1.2.0_all.deb
    ```
 
 3. Log out and back in (or run
@@ -35,6 +35,7 @@ dell-rugged-7404-status            # what is installed / working (OK, WORK, TODO
 dell-rugged-7404-status --watch    # live view, refreshes every 2 seconds
 dell-rugged-7404-status --install  # installs missing packages one by one with progress
 dell-gpu-check                     # which GPUs and drivers are in use
+dell-gps-check                     # GPS fix, satellites, signal strength, jamming indicator
 ```
 
 These are also in the application menu ("Dell Rugged 7404 Setup" and

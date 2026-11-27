@@ -90,6 +90,10 @@ def status():
             line("OK" if attached else "TODO",
                  f"gpsd has {port} attached" if attached else "gpsd has no device attached (run --install)")
 
+        if shutil.which("dell-gps-check"):
+            for text in run("dell-gps-check")[1].splitlines()[1:]:
+                line("INFO", text.strip())
+
     print("\nGraphics")
     if shutil.which("dell-gpu-check"):
         for text in run("dell-gpu-check")[1].splitlines():

@@ -1,0 +1,72 @@
+#!/usr/bin/python3
+"""Read-only u-blox GPS report: fix, satellites, signal strength and jamming indicator."""
+import json
+import shutil
+import subprocess
+import sys
+
+
+def gpsd_messages(count=40, timeout=20):
+    try:
+        result = subprocess.run(["gpspipe", "-w", "-n", str(count)], capture_output=True,
+                                text=True, timeout=timeout)
+        output = result.stdout
+    except subprocess.TimeoutExpired as error:
+        output = (error.stdout or b"").decode() if isinstance(error.stdout, bytes) else (error.stdout or "")
+    except OSError:
+        return []
+    messages = []
+    for text in output.splitlines():
+        try:
+            messages.append(json.loads(text))
+        except ValueError:
+            pass
+    return messages
+
+
+def jamming_indicator():
+    if not shutil.which("ubxtool"):
+        return None
+    try:
+        out = subprocess.run(["ubxtool", "-p", "MON-HW"], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for word, following in zip(out.split(), out.split()[1:]):
+        if word == "jamInd":
+            return int(following)
+    return None
+
+
+def main():
+    if not shutil.which("gpspipe"):
+        print("gpspipe not found; install gpsd-clients", file=sys.stderr)
+        return 2
+    messages = gpsd_messages()
+    devices = [m for m in messages if m.get("class") == "DEVICES" and m.get("devices")]
+    if not devices:
+        print("No GPS attached to gpsd. Run: sudo dell-rugged-7404-status --install")
+        return 1
+    print(f"Receiver: {devices[0]['devices'][0].get('path')}")
+    tpv = [m for m in messages if m.get("class") == "TPV"]
+    sky = [m for m in messages if m.get("class") == "SKY" and m.get("satellites")]
+    mode = tpv[-1].get("mode", 0) if tpv else 0
+    print(f"Fix: {['none', 'none', '2D', '3D'][mode] if mode < 4 else mode}")
+    if mode >= 2:
+        fix = tpv[-1]
+        print(f"Position: {fix.get('lat')}, {fix.get('lon')}  accuracy ~{fix.get('eph', '?')} m")
+    if sky:
+        sats = sky[-1]["satellites"]
+        signals = sorted((s.get("ss", 0) for s in sats), reverse=True)
+        print(f"Satellites: {sum(1 for s in sats if s.get('used'))} used / {len(sats)} seen")
+        print(f"Strongest signals (dB-Hz): {signals[:5]}"
+              + ("  - weak, check antenna sky view" if signals and signals[0] < 35 else ""))
+    jam = jamming_indicator()
+    if jam is not None:
+        level = "none" if jam < 40 else "possible" if jam < 100 else "STRONG"
+        print(f"Jamming indicator: {jam}/255 ({level} interference)")
+    return 0 if mode >= 2 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

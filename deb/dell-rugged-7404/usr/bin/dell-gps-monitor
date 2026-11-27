@@ -265,6 +265,34 @@ def system_is_dark():
     return "dark" in get("org.gnome.desktop.interface", "gtk-theme").lower()
 
 
+DESKTOP_ID = "dell-gps-monitor.desktop"
+
+
+def pin_to_dock():
+    """Add the app to the Ubuntu dock once; a later manual unpin is respected."""
+    import ast
+    import os
+    marker = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+                          "dell-rugged-7404", "dock-pinned")
+    if os.path.exists(marker):
+        return False
+    try:
+        out = subprocess.run(["gsettings", "get", "org.gnome.shell", "favorite-apps"],
+                             capture_output=True, text=True, timeout=5)
+        if out.returncode != 0:
+            return False
+        favorites = ast.literal_eval(out.stdout.strip().replace("@as ", ""))
+        if DESKTOP_ID not in favorites:
+            favorites.append(DESKTOP_ID)
+            subprocess.run(["gsettings", "set", "org.gnome.shell", "favorite-apps", str(favorites)],
+                           check=True, timeout=5)
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        open(marker, "w").close()
+        return True
+    except (OSError, ValueError, SyntaxError, subprocess.SubprocessError):
+        return False
+
+
 def run_app():
     import tkinter as tk
     from tkinter import font as tkfont
@@ -451,4 +479,8 @@ def run_app():
 
 
 if __name__ == "__main__":
+    import sys
+    if "--pin-dock" in sys.argv:
+        sys.exit(0 if pin_to_dock() else 1)
+    pin_to_dock()
     run_app()

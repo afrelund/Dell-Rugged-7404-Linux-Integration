@@ -956,6 +956,78 @@ def download_cells_for_areas(token, progress=None, mccs=US_MCCS):
     return total
 
 
+CELL_API = "https://opencellid.org/cell/getInArea?key={key}&BBOX={s},{w},{n},{e}&format=json&limit=50&offset={off}"
+
+
+def download_cells_near(token, lat, lon, radius_km=15, progress=None):
+    """Fetch towers around a point through the OpenCellID area API.
+
+    The API allows 4 sq km per request and 1,000 requests a day, so only a small area is practical."""
+    import urllib.error
+    import urllib.request
+    from concurrent.futures import ThreadPoolExecutor
+    say = progress or (lambda _t: None)
+    if not token:
+        raise RouteError("Enter your OpenCellID API token first.")
+    save_cell_token(token)
+    step_lat = 1.9 / 111.0
+    step_lon = 1.9 / (111.0 * max(math.cos(math.radians(lat)), 0.2))
+    count = int(radius_km / 1.9)
+    squares = [(lat + i * step_lat, lon + j * step_lon)
+               for i in range(-count, count + 1) for j in range(-count, count + 1)]
+    state = {"requests": 0, "stop": None}
+    found = []
+
+    def fetch(url):
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) dell-gps-monitor"})
+        state["requests"] += 1
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as error:
+            body = error.read().decode("utf-8", "replace")
+            if error.code == 429:
+                state["stop"] = "Daily OpenCellID request limit reached. Try again tomorrow."
+            elif error.code == 401:
+                state["stop"] = "OpenCellID did not recognise that API key."
+            else:
+                state["stop"] = f"OpenCellID error {error.code}: {body[:80]}"
+            return {}
+
+    def one(square):
+        sq_lat, sq_lon = square
+        offset = 0
+        while not state["stop"]:
+            data = fetch(CELL_API.format(key=token, s=sq_lat - step_lat / 2, w=sq_lon - step_lon / 2,
+                                         n=sq_lat + step_lat / 2, e=sq_lon + step_lon / 2, off=offset))
+            cells = data.get("cells") or []
+            for c in cells:
+                found.append((str(c.get("radio", "")).upper(), int(c["mcc"]), int(c["mnc"]), int(c["lac"]),
+                              int(c["cellid"]), float(c["lon"]), float(c["lat"]),
+                              int(c.get("range") or 0), int(c.get("samples") or 0)))
+            if len(cells) < 50:
+                break
+            offset += 50
+        return True
+    done = 0
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for _ in pool.map(one, squares):
+            done += 1
+            if done % 10 == 0:
+                say(f"Asking OpenCellID… {done} of {len(squares)} squares, {len(found):,} towers")
+    if state["stop"] and not found:
+        raise RouteError(state["stop"])
+    db = cell_db()
+    south, north = lat - (count + 1) * step_lat, lat + (count + 1) * step_lat
+    west, east = lon - (count + 1) * step_lon, lon + (count + 1) * step_lon
+    db.execute("DELETE FROM cells WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?", (south, north, west, east))
+    db.executemany("INSERT INTO cells VALUES (?,?,?,?,?,?,?,?,?)", set(found))
+    db.commit()
+    db.close()
+    say(f"{len(set(found)):,} towers added within {radius_km} km." + (f" {state['stop']}" if state["stop"] else ""))
+    return len(set(found))
+
+
 def auto_cells_after_download(progress=None):
     """Best-effort tower fetch after a county download, when a token is saved."""
     token = load_cell_token()
@@ -1871,6 +1943,14 @@ def run_app():
                 box.append(label("The token is saved, and towers are then fetched automatically whenever you "
                                  "download a county for routing or imagery. Or use a country code:",
                                  "hint", wrap=True))
+                def near_me():
+                    tpv = nav["tpv"]
+                    if tpv.get("mode", 0) < 2 or "lat" not in tpv:
+                        status.set_label("No GPS fix yet - needed to know where 'near me' is.")
+                        return
+                    run_job(lambda: download_cells_near(token.get_text().strip(), tpv["lat"], tpv["lon"],
+                                                        progress=say))
+                box.append(button("Download towers near me (API, about 15 km)", near_me))
                 box.append(button("Download by country code", lambda: run_job(
                     lambda: download_cells(token.get_text().strip(), mcc.get_text().strip(), say))))
                 box.append(button("Remove all tower data", lambda: run_job(clear_cells)))

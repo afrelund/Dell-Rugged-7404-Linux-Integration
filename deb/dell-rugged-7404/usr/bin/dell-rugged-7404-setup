@@ -15,10 +15,11 @@ import threading
 STATUS_TOOL = "/usr/bin/dell-rugged-7404-status"
 MARKER = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
                       "dell-rugged-7404", "setup-seen")
+GREEN, ORANGE, RED = "#2e7d32", "#ef6c00", "#c62828"
 STATES = {  # state -> (badge text, colour, button text)
-    "installed": ("● Installed", "#2e7d32", "Re-run"),
-    "partial": ("● Needs attention", "#ef6c00", "Fix"),
-    "missing": ("● Not installed", "#c62828", "Install"),
+    "installed": ("● Installed", GREEN, "Installed ✓"),
+    "partial": ("● Error", ORANGE, "Fix"),
+    "missing": ("● Not installed", RED, "Install"),
 }
 LIGHT = {"bg": "#f6f5f4", "fg": "#2e3436", "card": "#ffffff", "btn": "#e8e6e3", "log": "#ffffff"}
 DARK = {"bg": "#2b2b2b", "fg": "#eeeeec", "card": "#363636", "btn": "#444444", "log": "#1e1e1e"}
@@ -74,6 +75,7 @@ def run_app():
 
     events = queue.Queue()
     rows, busy = {}, {"id": None, "queue": []}
+    failed = set()
     root.configure(bg=pal["bg"])
 
     tk.Label(root, text="Dell Latitude 14 Rugged Extreme 7404", font=title_font,
@@ -99,7 +101,7 @@ def run_app():
         badge.pack(side="left", padx=8)
         button = tk.Button(card, text="Install", width=9, state="disabled", bg=pal["btn"], fg=pal["fg"],
                            activebackground=AMBER, highlightbackground=pal["card"],
-                           command=lambda: start([key]))
+                           disabledforeground="#ffffff", command=lambda: start([key]))
         button.pack(side="left")
         rows[key] = {"badge": badge, "button": button, "detail": detail, "state": None}
 
@@ -151,10 +153,13 @@ def run_app():
         for item in items:
             row = rows[item["id"]]
             row["state"] = item["state"]
-            badge, colour, action = STATES[item["state"]]
+            state = item["state"]
+            if item["id"] in failed and state != "installed":
+                state = "partial"
+            badge, colour, action = STATES[state]
             row["badge"].config(text=badge, fg=colour)
             row["detail"].config(text=item["detail"])
-            row["button"].config(text=action)
+            row["button"].config(text=action, bg=colour, fg="#ffffff", activebackground=colour)
         set_buttons(True)
 
     def refresh():
@@ -176,6 +181,7 @@ def run_app():
         key = busy["queue"].pop(0)
         busy["id"] = key
         rows[key]["badge"].config(text="⟳ Installing...", fg=AMBER)
+        rows[key]["button"].config(bg=AMBER, fg="#000000", text="Working...")
         write(f"--- {key} ---")
 
         def work():
@@ -189,6 +195,10 @@ def run_app():
                     events.put(("log", "Administrator authentication was cancelled or unavailable."))
                 elif code:
                     events.put(("log", f"Finished with exit code {code}."))
+                if code:
+                    events.put(("failed", key))
+                else:
+                    events.put(("ok", key))
             except OSError as error:
                 events.put(("log", f"Could not start: {error}"))
             events.put(("next", None))
@@ -212,6 +222,10 @@ def run_app():
                 elif kind == "error":
                     write(payload)
                     set_buttons(True)
+                elif kind == "failed":
+                    failed.add(payload)
+                elif kind == "ok":
+                    failed.discard(payload)
                 elif kind == "next":
                     run_next()
         except queue.Empty:

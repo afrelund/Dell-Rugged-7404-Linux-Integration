@@ -13,7 +13,7 @@ Packages the working Ubuntu fixes from a Latitude 7404:
   A desktop-user service maintains the Headphone Playback Volume control at
   its hardware maximum while the headphone jack is unplugged. This is the
   working speaker-routing workaround, NOT a command to maximize Master volume.
-  It does not change the headphone mute switch. It leaves connected headphones
+  It also unmutes the Headphone Playback Switch (the HDA jack control that feeds the built-in speaker). It leaves connected headphones
   alone and restores the previous value if insertion is detected during a write.
 
 This is hardware-specific, not a generic Dell driver installer. Other models,
@@ -109,6 +109,6 @@ Debian package (simple GUI option)
 Build and install the .deb (adds a "Dell Rugged 7404 Setup" app to the menu):
 
     sh deb/build.sh
-    sudo apt install ./dist/dell-rugged-7404_1.0.0_all.deb
+    sudo apt install ./dist/dell-rugged-7404_1.0.1_all.deb
 
 Remove with: sudo apt remove dell-rugged-7404. Do not combine with install.py.

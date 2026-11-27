@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Maintain the Latitude 7404 speaker workaround only while its jack is unplugged."""
+"""Keep the Latitude 7404 speaker path (HDA Headphone control) unmuted at full level while its jack is unplugged."""
 import argparse
 import os
 from pathlib import Path
@@ -11,6 +11,7 @@ import time
 AMIXER = "/usr/bin/amixer"
 JACK = "iface=CARD,name='Front Headphone Jack'"
 VOLUME = "iface=MIXER,name='Headphone Playback Volume'"
+SWITCH = "iface=MIXER,name='Headphone Playback Switch'"
 
 
 def amixer(*arguments):
@@ -50,19 +51,23 @@ def check(status_only=False):
     if maximum is None or not current:
         raise RuntimeError("Headphone volume limits unavailable; leaving mixer unchanged")
     target = int(maximum.group(1))
+    muted = [value != "on" for value in values(amixer("cget", SWITCH))]
     if status_only:
-        return f"Jack unplugged; Headphone volume={current}, speaker target={target}"
-    if all(value == target for value in current):
+        return (f"Jack unplugged; Headphone volume={current}, speaker target={target}, "
+                f"Headphone switch={'muted' if any(muted) else 'on'}")
+    if all(value == target for value in current) and not any(muted):
         return "Speaker workaround healthy"
-    # Recheck just before writing. Never change the headphone mute switch.
+    # Recheck just before writing so connected headphones are never touched.
     if jack_connected():
         return "Headphones connected; headphone settings left alone"
+    amixer("cset", SWITCH, ",".join(["on"] * len(muted)))
     amixer("cset", VOLUME, ",".join([str(target)] * len(current)))
     # Handle insertion during the short read/write window conservatively.
     if jack_connected():
         amixer("cset", VOLUME, ",".join(str(value) for value in current))
-        return "Jack changed during check; restored previous headphone volume"
-    return "Restored Headphone slider to 100% for built-in speaker"
+        amixer("cset", SWITCH, ",".join("off" if value else "on" for value in muted))
+        return "Jack changed during check; restored previous headphone settings"
+    return "Unmuted Headphone and set it to 100% for built-in speaker"
 
 
 def main():

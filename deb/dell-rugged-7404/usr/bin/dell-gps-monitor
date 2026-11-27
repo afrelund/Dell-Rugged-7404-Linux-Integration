@@ -2578,14 +2578,17 @@ def run_app():
                                                     simple.get_map().grab_focus()))
             simple.add_controller(drag)
             overlay = Gtk.Overlay(vexpand=True, hexpand=True)
-            overlay.set_child(simple)
+            map_column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, vexpand=True, hexpand=True)
+            simple.set_vexpand(True)
+            map_column.append(simple)
+            map_column.append(elevation_area)
+            overlay.set_child(map_column)
             target = Gtk.Label(label="\u2316", halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER,
                                can_target=False, visible=False)
             target.add_css_class("wp-target")
             overlay.add_overlay(target)
             ui["target"] = target
             mapp.append(overlay)
-            mapp.append(elevation_area)
             drawer = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_LEFT,
                                   valign=Gtk.Align.CENTER)
             panel_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)

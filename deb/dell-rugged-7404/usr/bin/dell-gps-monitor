@@ -527,6 +527,35 @@ def format_duration(minutes):
     return f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min"
 
 
+SNAP_RADII_KM = (0.5, 1, 2, 3, 5, 8, 12, 20, 30, 50)
+
+
+def router_command(folder, lat1, lon1, lat2, lon2, output):
+    return ["routino-router", f"--dir={folder}", "--prefix=routing",
+            f"--profiles={ROUTINO_SHARE}/profiles.xml",
+            f"--translations={ROUTINO_SHARE}/translations.xml", "--transport=motorcar",
+            "--quickest", f"--lat1={lat1}", f"--lon1={lon1}", f"--lat2={lat2}", f"--lon2={lon2}",
+            output, "--quiet"]
+
+
+def snap_to_road(folder, lat, lon, work):
+    """Return (lat, lon, metres) of the nearest drivable point, since routino only snaps within ~1 km."""
+    def drivable(la, lo):
+        result = subprocess.run(router_command(folder, la, lo, la, lo, "--output-none"),
+                                capture_output=True, text=True, cwd=work)
+        return result.returncode == 0
+    if drivable(lat, lon):
+        return lat, lon, 0.0
+    for radius in SNAP_RADII_KM:
+        for step in range(16):
+            angle = math.radians(step * 22.5)
+            la = lat + math.cos(angle) * radius / 111.32
+            lo = lon + math.sin(angle) * radius / (111.32 * max(math.cos(math.radians(lat)), 0.01))
+            if drivable(la, lo):
+                return la, lo, radius * 1000.0
+    raise RouteError("No drivable road within 50 km of that point in the downloaded areas.")
+
+
 def compute_route(lat1, lon1, lat2, lon2):
     folder = os.path.join(MAPS_DIR, "routing")
     if not os.path.exists(os.path.join(folder, "routing-nodes.mem")):
@@ -535,17 +564,22 @@ def compute_route(lat1, lon1, lat2, lon2):
         raise RouteError("routino is not installed (sudo apt install routino).")
     import tempfile
     with tempfile.TemporaryDirectory() as work:
-        run_tool(["routino-router", f"--dir={folder}", "--prefix=routing",
-                  f"--profiles={ROUTINO_SHARE}/profiles.xml",
-                  f"--translations={ROUTINO_SHARE}/translations.xml", "--transport=motorcar",
-                  "--quickest", f"--lat1={lat1}", f"--lon1={lon1}", f"--lat2={lat2}", f"--lon2={lon2}",
-                  "--output-text-all", "--quiet"], cwd=work)
+        start = snap_to_road(folder, lat1, lon1, work)
+        end = snap_to_road(folder, lat2, lon2, work)
+        run_tool(router_command(folder, start[0], start[1], end[0], end[1], "--output-text-all"), cwd=work)
         with open(os.path.join(work, "quickest-all.txt")) as handle:
             points = parse_route_text(handle.read())
     if len(points) < 2:
         raise RouteError("No route found.")
+    steps = route_steps(points)
+    notes = []
+    if start[2]:
+        notes.append(f"You are about {start[2] / 1000:.1f} km from the nearest road; the route starts there.")
+    if end[2]:
+        notes.append(f"The destination is about {end[2] / 1000:.1f} km from the nearest road; "
+                     "the route ends there and the rest is off-road.")
     return {"points": points, "km": points[-1]["total_km"], "minutes": points[-1]["total_min"],
-            "steps": route_steps(points)}
+            "steps": steps, "notes": notes, "ends": ((lat1, lon1), (lat2, lon2))}
 
 
 def system_is_dark():
@@ -1040,8 +1074,8 @@ def run_app():
                               margin_bottom=12, margin_start=12, margin_end=12)
                 box.append(label(f"{route['km']:.1f} km · {format_duration(route['minutes'])} by car",
                                  "status"))
-                steps = "\n".join(f"{n}. {step['road']} – {step['km']:.1f} km"
-                                   for n, step in enumerate(route["steps"], 1))
+                steps = "\n".join(route["notes"] + [""] * bool(route["notes"]) + [f"{n}. {step['road']} – {step['km']:.1f} km"
+                                   for n, step in enumerate(route["steps"], 1)])
                 box.append(scrolled(label(steps, "mono", wrap=True)))
                 box.append(button("Close", dialog.destroy))
                 dialog.set_child(box)
@@ -1103,8 +1137,10 @@ def run_app():
                         message_dialog("Route", error)
                         return False
                     nav["route"] = result
-                    for point in result["points"]:
-                        route_layer.add_node(Shumate.Coordinate.new_full(point["lat"], point["lon"]))
+                    path = [(p["lat"], p["lon"]) for p in result["points"]]
+                    path = [result["ends"][0]] + path + [result["ends"][1]]
+                    for lat, lon in path:
+                        route_layer.add_node(Shumate.Coordinate.new_full(lat, lon))
                     ui["route_button"].set_label("Clear route")
                     ui["route_note"].set_label(f"{result['km']:.1f} km · {format_duration(result['minutes'])}")
                     show_directions(result)

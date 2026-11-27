@@ -426,6 +426,30 @@ class CellTowerTests(unittest.TestCase):
                 self.assertEqual(gps.cell_count(), 1)
                 self.assertEqual(gps.load_cell_token(), "KEY")
 
+    def test_near_me_api_download(self):
+        import io, json as j, tempfile
+        reply = {"count": 1, "cells": [{"lat": 40.4, "lon": -109.5, "mcc": 310, "mnc": 260, "lac": 1,
+                                        "cellid": 9, "range": 1, "samples": 1, "radio": "LTE"}]}
+
+        class Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+        calls = []
+
+        def fake_open(request, timeout=0):
+            calls.append(request.full_url)
+            return Resp(j.dumps(reply if len(calls) == 1 else {"count": 0, "cells": []}).encode())
+        with tempfile.TemporaryDirectory() as tmp, patch.object(gps, "CELLS_DIR", tmp), \
+                patch.object(gps, "CELL_DB", os.path.join(tmp, "c.db")), \
+                patch.object(gps, "CELL_TOKEN", os.path.join(tmp, "token")), \
+                patch("urllib.request.urlopen", fake_open):
+            self.assertEqual(gps.download_cells_near("KEY", 40.4, -109.5, radius_km=1), 1)
+            self.assertEqual(gps.cell_count(), 1)
+        self.assertIn("getInArea?key=KEY&BBOX=", calls[0])
+
     def test_mmcli_keyvalue(self):
         self.assertEqual(gps.parse_mmcli_keyvalue("modem.generic.state : failed\nbad line\n")["modem.generic.state"],
                          "failed")

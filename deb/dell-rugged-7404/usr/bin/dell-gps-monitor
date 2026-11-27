@@ -959,73 +959,108 @@ def download_cells_for_areas(token, progress=None, mccs=US_MCCS):
 CELL_API = "https://opencellid.org/cell/getInArea?key={key}&BBOX={s},{w},{n},{e}&format=json&limit=50&offset={off}"
 
 
-def download_cells_near(token, lat, lon, radius_km=15, progress=None):
-    """Fetch towers around a point through the OpenCellID area API.
+API_DAILY_BUDGET = 900
 
-    The API allows 4 sq km per request and 1,000 requests a day, so only a small area is practical."""
+
+def download_cells_api(token, boxes, centre=None, progress=None):
+    """Fetch towers for whole areas through the OpenCellID area API, nearest squares first.
+
+    The API allows 4 sq km and 1,000 requests a day, so big areas take several days: squares already
+    fetched are remembered and the next run carries on where this one stopped."""
     import urllib.error
     import urllib.request
     from concurrent.futures import ThreadPoolExecutor
     say = progress or (lambda _t: None)
     if not token:
         raise RouteError("Enter your OpenCellID API token first.")
+    if not boxes:
+        raise RouteError("No counties downloaded yet. Download a county for routing or imagery first.")
     save_cell_token(token)
+    progress_path = os.path.join(CELLS_DIR, "api_progress.json")
+    try:
+        with open(progress_path) as handle:
+            record = json.load(handle)
+    except (OSError, ValueError):
+        record = {}
+    today = datetime.date.today().isoformat()
+    if record.get("day") != today:
+        record["day"], record["used"] = today, 0
+    done_squares = set(record.get("done", []))
     step_lat = 1.9 / 111.0
-    step_lon = 1.9 / (111.0 * max(math.cos(math.radians(lat)), 0.2))
-    count = int(radius_km / 1.9)
-    squares = [(lat + i * step_lat, lon + j * step_lon)
-               for i in range(-count, count + 1) for j in range(-count, count + 1)]
-    state = {"requests": 0, "stop": None}
-    found = []
+    squares = []
+    for south, west, north, east in boxes:
+        mid = math.radians((south + north) / 2)
+        step_lon = 1.9 / (111.0 * max(math.cos(mid), 0.2))
+        lat_v = south
+        while lat_v < north:
+            lon_v = west
+            while lon_v < east:
+                key = f"{lat_v:.4f},{lon_v:.4f}"
+                if key not in done_squares:
+                    squares.append((lat_v, lon_v, step_lon, key))
+                lon_v += step_lon
+            lat_v += step_lat
+    total_squares = len(squares) + len(done_squares)
+    if centre:
+        squares.sort(key=lambda q: (q[0] - centre[0]) ** 2 + ((q[1] - centre[1]) * 0.77) ** 2)
+    state = {"stop": None}
+    found, finished = [], []
 
     def fetch(url):
+        record["used"] += 1
         request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) dell-gps-monitor"})
-        state["requests"] += 1
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 return json.loads(response.read().decode("utf-8", "replace"))
         except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", "replace")
-            if error.code == 429:
-                state["stop"] = "Daily OpenCellID request limit reached. Try again tomorrow."
-            elif error.code == 401:
-                state["stop"] = "OpenCellID did not recognise that API key."
-            else:
-                state["stop"] = f"OpenCellID error {error.code}: {body[:80]}"
-            return {}
+            state["stop"] = ("Daily OpenCellID request limit reached." if error.code == 429 else
+                             "OpenCellID did not recognise that API key." if error.code == 401 else
+                             f"OpenCellID error {error.code}.")
+        except (OSError, ValueError):
+            state["stop"] = "Could not reach OpenCellID."
+        return {}
 
     def one(square):
-        sq_lat, sq_lon = square
+        sq_lat, sq_lon, step_lon, key = square
         offset = 0
-        while not state["stop"]:
-            data = fetch(CELL_API.format(key=token, s=sq_lat - step_lat / 2, w=sq_lon - step_lon / 2,
-                                         n=sq_lat + step_lat / 2, e=sq_lon + step_lon / 2, off=offset))
+        while not state["stop"] and record["used"] < API_DAILY_BUDGET:
+            data = fetch(CELL_API.format(key=token, s=sq_lat, w=sq_lon, n=sq_lat + step_lat,
+                                         e=sq_lon + step_lon, off=offset))
+            if state["stop"]:
+                return
             cells = data.get("cells") or []
             for c in cells:
                 found.append((str(c.get("radio", "")).upper(), int(c["mcc"]), int(c["mnc"]), int(c["lac"]),
                               int(c["cellid"]), float(c["lon"]), float(c["lat"]),
                               int(c.get("range") or 0), int(c.get("samples") or 0)))
             if len(cells) < 50:
-                break
+                finished.append(key)
+                return
             offset += 50
-        return True
-    done = 0
+    count = 0
     with ThreadPoolExecutor(max_workers=4) as pool:
         for _ in pool.map(one, squares):
-            done += 1
-            if done % 10 == 0:
-                say(f"Asking OpenCellID… {done} of {len(squares)} squares, {len(found):,} towers")
-    if state["stop"] and not found:
-        raise RouteError(state["stop"])
+            count += 1
+            if count % 20 == 0:
+                say(f"Asking OpenCellID… {len(finished) + len(done_squares)} of {total_squares} squares, "
+                    f"{len(found):,} towers")
+    unique = set(found)
     db = cell_db()
-    south, north = lat - (count + 1) * step_lat, lat + (count + 1) * step_lat
-    west, east = lon - (count + 1) * step_lon, lon + (count + 1) * step_lon
-    db.execute("DELETE FROM cells WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?", (south, north, west, east))
-    db.executemany("INSERT INTO cells VALUES (?,?,?,?,?,?,?,?,?)", set(found))
+    db.executemany("DELETE FROM cells WHERE mcc=? AND net=? AND cell=?", {(t[1], t[2], t[4]) for t in unique})
+    db.executemany("INSERT INTO cells VALUES (?,?,?,?,?,?,?,?,?)", unique)
     db.commit()
     db.close()
-    say(f"{len(set(found)):,} towers added within {radius_km} km." + (f" {state['stop']}" if state["stop"] else ""))
-    return len(set(found))
+    record["done"] = sorted(done_squares | set(finished))
+    os.makedirs(CELLS_DIR, exist_ok=True)
+    with open(progress_path, "w") as handle:
+        json.dump(record, handle)
+    left = total_squares - len(record["done"])
+    if state["stop"] and not unique and not finished:
+        raise RouteError(state["stop"])
+    say(f"{len(unique):,} towers added. " + ("All squares of your downloaded counties are done." if not left else
+        f"{left} of {total_squares} squares left - tap again tomorrow (limit is about {API_DAILY_BUDGET} "
+        "requests a day)."))
+    return len(unique)
 
 
 def auto_cells_after_download(progress=None):
@@ -1943,14 +1978,12 @@ def run_app():
                 box.append(label("The token is saved, and towers are then fetched automatically whenever you "
                                  "download a county for routing or imagery. Or use a country code:",
                                  "hint", wrap=True))
-                def near_me():
+                def by_api():
                     tpv = nav["tpv"]
-                    if tpv.get("mode", 0) < 2 or "lat" not in tpv:
-                        status.set_label("No GPS fix yet - needed to know where 'near me' is.")
-                        return
-                    run_job(lambda: download_cells_near(token.get_text().strip(), tpv["lat"], tpv["lon"],
-                                                        progress=say))
-                box.append(button("Download towers near me (API, about 15 km)", near_me))
+                    here = (tpv["lat"], tpv["lon"]) if tpv.get("mode", 0) >= 2 and "lat" in tpv else None
+                    run_job(lambda: download_cells_api(token.get_text().strip(),
+                                                       list(downloaded_county_bboxes().values()), here, say))
+                box.append(button("Download my counties via API (resumes daily)", by_api))
                 box.append(button("Download by country code", lambda: run_job(
                     lambda: download_cells(token.get_text().strip(), mcc.get_text().strip(), say))))
                 box.append(button("Remove all tower data", lambda: run_job(clear_cells)))

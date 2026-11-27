@@ -426,7 +426,7 @@ class CellTowerTests(unittest.TestCase):
                 self.assertEqual(gps.cell_count(), 1)
                 self.assertEqual(gps.load_cell_token(), "KEY")
 
-    def test_near_me_api_download(self):
+    def test_county_api_download(self):
         import io, json as j, tempfile
         reply = {"count": 1, "cells": [{"lat": 40.4, "lon": -109.5, "mcc": 310, "mnc": 260, "lac": 1,
                                         "cellid": 9, "range": 1, "samples": 1, "radio": "LTE"}]}
@@ -446,7 +446,7 @@ class CellTowerTests(unittest.TestCase):
                 patch.object(gps, "CELL_DB", os.path.join(tmp, "c.db")), \
                 patch.object(gps, "CELL_TOKEN", os.path.join(tmp, "token")), \
                 patch("urllib.request.urlopen", fake_open):
-            self.assertEqual(gps.download_cells_near("KEY", 40.4, -109.5, radius_km=1), 1)
+            self.assertEqual(gps.download_cells_api("KEY", [(40.40, -109.50, 40.42, -109.48)]), 1)
             self.assertEqual(gps.cell_count(), 1)
         self.assertIn("getInArea?key=KEY&BBOX=", calls[0])
 

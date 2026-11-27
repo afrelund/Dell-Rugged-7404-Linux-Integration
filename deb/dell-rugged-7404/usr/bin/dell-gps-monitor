@@ -728,7 +728,9 @@ def trail_to(folder, work, road, outer):
                      cwd=work)
             with open(os.path.join(work, "quickest-all.txt")) as handle:
                 found = parse_route_text(handle.read())
-            if len(found) > 1:
+            gain = gap - trail[2]
+            # Skip trails that wander: the walk must be roughly as long as the ground it gains.
+            if len(found) > 1 and found[-1]["total_km"] * 1000 <= 2 * gain + 200:
                 return [(p["lat"], p["lon"]) for p in found] + [outer], found[-1]["total_km"], trail[2]
     except (RouteError, OSError):
         pass

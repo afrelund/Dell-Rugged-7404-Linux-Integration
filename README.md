@@ -16,7 +16,7 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
 2. Install it:
 
    ```sh
-   sudo apt install ./dell-rugged-7404_1.0.2_all.deb
+   sudo apt install ./dell-rugged-7404_1.1.0_all.deb
    ```
 
 3. Log out and back in (or run
@@ -27,6 +27,21 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
    dell-speaker-check --status
    systemctl --user status dell-speaker-check.service
    ```
+
+## Status and install progress (terminal)
+
+```sh
+dell-rugged-7404-status            # what is installed / working (OK, WORK, TODO)
+dell-rugged-7404-status --watch    # live view, refreshes every 2 seconds
+dell-rugged-7404-status --install  # installs missing packages one by one with progress
+dell-gpu-check                     # which GPUs and drivers are in use
+```
+
+These are also in the application menu ("Dell Rugged 7404 Setup" and
+"Dell Rugged 7404 Status"). The package also attaches a u-blox USB GPS receiver
+to gpsd; view the fix with `cgps -s`. The Latitude's NVIDIA GT 720M has no
+proprietary driver in Ubuntu 26.04, so the in-kernel `nouveau` driver is used;
+`dell-gpu-check --install` only installs a driver Ubuntu itself recommends.
 
 Upgrading from 1.0.0 is the same `apt install` command, followed by a
 re-login (or `systemctl --user restart dell-speaker-check.service`).

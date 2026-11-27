@@ -3,11 +3,13 @@
 while :; do
     ts_timer=$(systemctl is-active egalax-touchscreen-check.timer 2>/dev/null)
     spk=$(systemctl --user is-active dell-speaker-check.service 2>/dev/null)
-    choice=$(zenity --list --title="Dell Rugged 7404 Setup" --width=460 --height=340 \
+    choice=$(zenity --list --title="Dell Rugged 7404 Setup" --width=460 --height=400 \
         --text="Touchscreen check timer: ${ts_timer}\nSpeaker helper (this user): ${spk}" \
         --column=Action \
         "Repair touchscreen now" \
         "Start speaker helper" \
+        "Show live status (terminal)" \
+        "Install / fix everything (terminal)" \
         "Show status details" \
         "Quit") || exit 0
     case "$choice" in
@@ -23,6 +25,12 @@ while :; do
             else
                 zenity --error --text="Could not start the speaker helper." --width=300
             fi ;;
+        "Show live status (terminal)")
+            x-terminal-emulator -e sh -c '/usr/bin/dell-rugged-7404-status --watch' ||
+                zenity --error --text="No terminal emulator found. Run: dell-rugged-7404-status --watch" --width=420 ;;
+        "Install / fix everything (terminal)")
+            x-terminal-emulator -e sh -c '/usr/bin/dell-rugged-7404-status --install; echo; read -p "Press Enter to close" _' ||
+                zenity --error --text="No terminal emulator found. Run: dell-rugged-7404-status --install" --width=420 ;;
         "Show status details")
             { /usr/bin/dell-speaker-check --status 2>&1
               echo; systemctl status egalax-touchscreen-check.timer --no-pager 2>&1; } |

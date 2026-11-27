@@ -1,0 +1,101 @@
+#!/usr/bin/python3
+"""Report the GPUs in this laptop and the kernel driver each one uses.
+
+With --install, install a proprietary NVIDIA driver only if Ubuntu itself
+recommends one for this hardware (legacy chips such as the GT 720M have none,
+and the in-kernel nouveau driver is then the correct choice).
+"""
+import argparse
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+NVIDIA, AMD, INTEL = "0x10de", "0x1002", "0x8086"
+VENDORS = {NVIDIA: "NVIDIA", AMD: "AMD", INTEL: "Intel"}
+GPU_CLASSES = ("0x03",)
+
+
+def read(path):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return ""
+
+
+def gpus():
+    found = []
+    for device in sorted(Path("/sys/bus/pci/devices").glob("*")):
+        if not read(device / "class").startswith(GPU_CLASSES):
+            continue
+        driver = (device / "driver").resolve().name if (device / "driver").exists() else "none"
+        vendor = read(device / "vendor")
+        found.append({
+            "slot": device.name,
+            "vendor": VENDORS.get(vendor, vendor),
+            "vendor_id": vendor,
+            "id": f"{vendor[2:]}:{read(device / 'device')[2:]}",
+            "driver": driver,
+        })
+    return found
+
+
+def lspci_name(slot):
+    if not shutil.which("lspci"):
+        return ""
+    result = subprocess.run(["lspci", "-s", slot], capture_output=True, text=True)
+    return result.stdout.strip().split(": ", 1)[-1]
+
+
+def recommended_nvidia():
+    if not shutil.which("ubuntu-drivers"):
+        return None
+    result = subprocess.run(["ubuntu-drivers", "devices"], capture_output=True, text=True)
+    for line in result.stdout.splitlines():
+        if "recommended" in line and "nvidia-driver" in line:
+            return next((word for word in line.split() if word.startswith("nvidia-driver")), None)
+    return None
+
+
+def report():
+    cards = gpus()
+    if not cards:
+        print("No PCI graphics controller found.")
+        return 1
+    for card in cards:
+        print(f"{card['vendor']} GPU {card['id']} at {card['slot']}: "
+              f"driver={card['driver']}  {lspci_name(card['slot'])}")
+        if card["vendor_id"] == NVIDIA and card["driver"] == "nouveau":
+            package = recommended_nvidia()
+            if package:
+                print(f"  Ubuntu recommends the proprietary driver: {package} "
+                      "(run: dell-gpu-check --install)")
+            else:
+                print("  No proprietary driver is offered for this chip; nouveau is correct.")
+    return 0
+
+
+def install():
+    if os.geteuid() != 0:
+        os.execvp("sudo", ["sudo", sys.executable, *sys.argv])
+    package = recommended_nvidia()
+    if not package:
+        print("Nothing to install: Ubuntu recommends no proprietary GPU driver for this laptop.")
+        return 0
+    print(f"Installing {package} ...", flush=True)
+    result = subprocess.run(["apt-get", "install", "-y", package])
+    if result.returncode == 0:
+        print(f"{package} installed. Reboot to use it.")
+    return result.returncode
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--install", action="store_true", help="install a recommended driver")
+    args = parser.parse_args()
+    return install() if args.install else report()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Dell Rugged 7404 Status (terminal)
+Comment=Live status of touchscreen, speaker, GPS and graphics fixes
+Exec=/usr/bin/dell-rugged-7404-status --watch
+Icon=utilities-terminal
+Categories=Settings;HardwareSettings;
+Terminal=true

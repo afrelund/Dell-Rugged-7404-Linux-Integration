@@ -379,5 +379,18 @@ class ElevationProfileTests(unittest.TestCase):
         self.assertEqual((stats["gain"], stats["loss"], stats["min"], stats["max"]), (60, 30, 100, 150))
 
 
+class ImageryTests(unittest.TestCase):
+    def test_tile_math_and_counts(self):
+        self.assertEqual(gps.tile_xy(0, 0, 1), (1, 1))
+        self.assertEqual(gps.tile_xy(40.7, -109.5, 0), (0, 0))
+        bbox = (40.0, -110.0, 41.0, -109.0)
+        self.assertEqual(len(list(gps.tiles_for_bbox(bbox, 8, 10))), gps.count_tiles(bbox, 8, 10))
+        self.assertGreater(gps.count_tiles(bbox, 8, 12), gps.count_tiles(bbox, 8, 10))
+
+    def test_geojson_bbox(self):
+        data = {"features": [{"geometry": {"coordinates": [[[[-110, 40], [-109, 41], [-109.5, 40.5]]]]}}]}
+        self.assertEqual(gps.geojson_bbox(data), (40, -110, 41, -109))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,9 @@
 Package: dell-rugged-7404
-Version: 1.7.0
+Version: 1.8.0
 Section: utils
 Priority: optional
 Architecture: all
-Depends: python3, python3-gi, gir1.2-gtk-4.0, python3-gi-cairo, alsa-utils, udev, systemd, pciutils, policykit-1 | polkitd
+Depends: python3, python3-gi, gir1.2-gtk-4.0, gir1.2-shumate-1.0, python3-gi-cairo, alsa-utils, udev, systemd, pciutils, policykit-1 | polkitd
 Suggests: gpsd, gpsd-clients
 Maintainer: afrelund <noreply@users.noreply.github.com>
 Description: Linux fixes for Dell Latitude 14 Rugged Extreme (7404)

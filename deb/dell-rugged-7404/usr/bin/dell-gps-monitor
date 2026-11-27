@@ -399,7 +399,7 @@ def pin_to_dock():
         return False
 
 
-TABS = ("LIVE", "SIGNALS", "NAVIGATE", "TRACK", "TOOLS")
+TABS = ("LIVE", "SIGNALS", "NAVIGATE", "MAP", "TRACK", "TOOLS")
 AMBER = "#f2b01e"
 RECEIVER_RATES = (("1 Hz", 1000), ("2 Hz", 500), ("5 Hz", 200))
 RECEIVER_CONSTELLATIONS = ("GALILEO", "GLONASS", "BEIDOU")
@@ -421,6 +421,7 @@ CSS = f"""
 .status {{ font-size: 14pt; font-weight: bold; }}
 .bold {{ font-weight: bold; }}
 .wp-row {{ min-height: 44px; font-family: monospace; }}
+.map-marker {{ color: #d32f2f; font-size: 28pt; }}
 """
 
 
@@ -783,6 +784,42 @@ def run_app():
         navp.append(wp_buttons)
         stack.add_named(navp, "NAVIGATE")
 
+        # MAP
+        mapp = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        try:
+            gi.require_version("Shumate", "1.0")
+            from gi.repository import Shumate
+            simple = Shumate.SimpleMap(vexpand=True, hexpand=True)
+            registry = Shumate.MapSourceRegistry.new_with_defaults()
+            simple.set_map_source(registry.get_by_id(Shumate.MAP_SOURCE_OSM_MAPNIK))
+            viewport = simple.get_viewport()
+            viewport.set_zoom_level(3)
+            layer = Shumate.MarkerLayer.new(viewport)
+            marker = Shumate.Marker()
+            marker_label = Gtk.Label(label="\u25cf")
+            marker_label.add_css_class("map-marker")
+            marker.set_child(marker_label)
+            layer.add_marker(marker)
+            simple.add_overlay_layer(layer)
+            ui["map"] = {"simple": simple, "viewport": viewport, "marker": marker, "follow": True, "placed": False}
+
+            def center_on_me():
+                ui["map"]["follow"] = True
+                tpv = nav["tpv"]
+                if "lat" in tpv and "lon" in tpv:
+                    simple.get_map().go_to_full(tpv["lat"], tpv["lon"], max(viewport.get_zoom_level(), 14))
+            drag = Gtk.GestureDrag()
+            drag.connect("drag-begin", lambda *_a: ui["map"].update(follow=False))
+            simple.add_controller(drag)
+            mapp.append(simple)
+            mapp.append(button("Center on my position", center_on_me))
+            mapp.append(label("Street map from OpenStreetMap (needs internet; viewed tiles are cached). "
+                              "Pinch or use +/- to zoom, drag to pan.", "hint", wrap=True))
+        except (ImportError, ValueError):
+            mapp.append(label("The map needs the package gir1.2-shumate-1.0:\n"
+                              "sudo apt install gir1.2-shumate-1.0", "hint", wrap=True))
+        stack.add_named(mapp, "MAP")
+
         # TRACK
         trackp = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         trackp.append(label("TRACK LOG", "bold"))
@@ -1009,6 +1046,16 @@ def run_app():
             fix = {0: "No data", 1: "No fix", 2: "2D fix", 3: "3D fix"}.get(mode, "?")
             ui["status"].set_markup(colored(("⚠ JAMMING ALERT  " if alert else "") + fix,
                                             "#c62828" if alert else "#2e7d32" if mode >= 2 else "#ef6c00"))
+
+        if "map" in ui and mode >= 2 and "lat" in tpv and "lon" in tpv:
+            m = ui["map"]
+            m["marker"].set_location(tpv["lat"], tpv["lon"])
+            if m["follow"]:
+                if not m["placed"]:
+                    m["simple"].get_map().go_to_full(tpv["lat"], tpv["lon"], 15)
+                    m["placed"] = True
+                else:
+                    m["simple"].get_map().center_on(tpv["lat"], tpv["lon"])
 
         lines = []
         header = lambda name: lines.append((name, None))

@@ -1,20 +1,8 @@
 #!/bin/sh
 set -e
 if [ "$1" = configure ]; then
-    model=$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)
-    if [ "$model" != "Latitude 14 Rugged Extreme (7404)" ]; then
-        echo "dell-rugged-7404: unsupported model '$model'; services not enabled." >&2
-        exit 0
-    fi
     udevadm control --reload-rules || true
     systemctl daemon-reload || true
-    systemctl enable egalax-touchscreen-check.timer || true
-    systemctl restart egalax-touchscreen-check.timer || true
-    systemctl start --no-block egalax-touchscreen-check.service || true
-    # Attach a u-blox GPS receiver to gpsd if one is plugged in.
-    /usr/bin/python3 /usr/bin/dell-rugged-7404-status --attach-gps >/dev/null 2>&1 || true
-    # Enable the speaker helper for every desktop user.
-    systemctl --global enable dell-speaker-check.service || true
-    echo "dell-rugged-7404: log out and in (or run 'systemctl --user enable --now dell-speaker-check.service') to start the speaker helper."
+    echo "dell-rugged-7404: nothing is enabled automatically. Open 'Dell Rugged 7404 Setup' from the app menu (it also opens at next login) and click Install."
 fi
 exit 0

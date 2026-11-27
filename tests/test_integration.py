@@ -22,6 +22,8 @@ def load(name, path):
 audio = load("audio", ROOT / "files/dell-speaker-check")
 touch = load("touch", ROOT / "files/egalax-touchscreen-check")
 installer = load("installer", ROOT / "install.py")
+status = load("status", ROOT / "deb/dell-rugged-7404/usr/bin/dell-rugged-7404-status")
+setup = load("setup", ROOT / "deb/dell-rugged-7404/usr/bin/dell-rugged-7404-setup")
 gps = load("gps", ROOT / "deb/dell-rugged-7404/usr/bin/dell-gps-monitor")
 SWITCH_OFF = " : values=off,off\n"
 SWITCH_ON = " : values=on,on\n"
@@ -274,6 +276,27 @@ class GpsNavigationTests(unittest.TestCase):
         self.assertEqual(gps.dop_quality(1.2)[0], "good")
         self.assertEqual(gps.dop_quality(8)[0], "poor")
         self.assertEqual(gps.dop_quality(None)[0], "-")
+
+
+class SetupAppTests(unittest.TestCase):
+    def test_components_report_state_for_each_item(self):
+        with unittest.mock.patch.object(status, "component_touchscreen", return_value=("missing", "x")), \
+             unittest.mock.patch.object(status, "component_speaker", return_value=("installed", "y")), \
+             unittest.mock.patch.object(status, "component_gps", return_value=("partial", "z")), \
+             unittest.mock.patch.object(status, "component_graphics", return_value=("installed", "w")):
+            items = status.components()
+        self.assertEqual([i["id"] for i in items], ["touchscreen", "speaker", "gps", "graphics"])
+        self.assertEqual([i["state"] for i in items], ["missing", "installed", "partial", "installed"])
+
+    def test_apply_rejects_unknown_component_and_non_root(self):
+        with contextlib.redirect_stdout(io.StringIO()), unittest.mock.patch.object(status.os, "geteuid", return_value=1000):
+            self.assertEqual(status.apply("bogus"), 2)
+            self.assertEqual(status.apply("gps"), 1)
+
+    def test_only_speaker_runs_without_pkexec(self):
+        with unittest.mock.patch.object(setup.os, "geteuid", return_value=1000):
+            self.assertEqual(setup.install_command("speaker")[0], setup.STATUS_TOOL)
+            self.assertEqual(setup.install_command("gps")[0], "pkexec")
 
 
 if __name__ == "__main__":

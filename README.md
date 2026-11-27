@@ -16,7 +16,7 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
 2. Install it:
 
    ```sh
-   sudo apt install ./dell-rugged-7404_1.2.1_all.deb
+   sudo apt install ./dell-rugged-7404_1.3.0_all.deb
    ```
 
 3. Log out and back in (or run
@@ -27,6 +27,16 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
    dell-speaker-check --status
    systemctl --user status dell-speaker-check.service
    ```
+
+## GPS Monitor (desktop app)
+
+Open **Dell Rugged GPS Monitor** from the application menu, or run `dell-gps-monitor`.
+It shows a satellite sky plot (colored by GPS, Galileo, GLONASS, BeiDou, SBAS, QZSS;
+filled = used in the fix; dB-Hz under each satellite), your position as decimal
+degrees, degrees/decimal minutes, degrees/minutes/seconds, UTM, MGRS / US National
+Grid and Maidenhead, altitude, GPS time (with week and time of week), UTC, local
+time, and the u-blox jamming indicator with antenna status. It is read-only:
+nothing is written to the receiver. GPS time is UTC plus 18 leap seconds.
 
 ## Status and install progress (terminal)
 

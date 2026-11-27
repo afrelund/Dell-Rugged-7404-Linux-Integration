@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Dell Rugged GPS Monitor
+Comment=Satellite sky view, coordinates (UTM, MGRS, DMS), GPS/local time and jamming indicator
+Exec=/usr/bin/dell-gps-monitor
+Icon=preferences-system-location
+Categories=Utility;Geography;
+Terminal=false

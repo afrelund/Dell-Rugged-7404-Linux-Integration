@@ -20,6 +20,7 @@ PACKAGES = {
     "gpsd-clients": "GPS tools (cgps, gpspipe, ubxtool)",
     "pciutils": "GPU detection (lspci)",
     "zenity": "setup window",
+    "python3-tk": "GPS monitor window",
 }
 UBLOX = "1546"
 COLORS = {"OK": "32", "WORK": "33", "TODO": "31", "INFO": "36"}

@@ -1,6 +1,6 @@
 # Dell Latitude 14 Rugged Extreme (7404) – Linux integration
 
-Fixes for Ubuntu on the Latitude 14 Rugged Extreme (7404) only:
+Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme (7404) only:
 
 - **Touchscreen** (eGalax `0eef:0001`): correct classification and no autosuspend.
 - **Built-in speaker**: the speaker is driven through the HDA *Headphone* control.

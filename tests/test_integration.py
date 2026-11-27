@@ -240,5 +240,41 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn(str(Path.home()) + "/", unit)
 
 
+class GpsNavigationTests(unittest.TestCase):
+    def test_bearing_distance_and_compass(self):
+        metres, bearing = gps.bearing_distance(0, 0, 0, 1)
+        self.assertAlmostEqual(metres, 111195, delta=100)
+        self.assertAlmostEqual(bearing, 90, delta=0.01)
+        self.assertEqual((gps.compass_point(0), gps.compass_point(135), gps.compass_point(355)),
+                         ("N", "SE", "N"))
+        self.assertEqual(gps.turn_hint(350, 10), "20° right")
+        self.assertEqual(gps.turn_hint(10, 350), "20° left")
+
+    def test_sun_times_salt_lake_midsummer(self):
+        import datetime
+        rise, sunset = gps.sun_times(40.77, -111.89, datetime.date(2026, 6, 21))
+        self.assertAlmostEqual(rise.hour + rise.minute / 60, 11.8, delta=0.15)
+        self.assertAlmostEqual((sunset.hour + sunset.minute / 60) % 24, 3.05, delta=0.15)
+        self.assertIsNone(gps.sun_times(80, 0, datetime.date(2026, 6, 21)))
+
+    def test_gpx_escapes_names_and_lists_points(self):
+        text = gps.gpx_text([{"time": "2026-01-01T00:00:00Z", "lat": 1.0, "lon": 2.0, "alt": 3.0}],
+                            [{"name": "A&B", "lat": 4.0, "lon": 5.0}])
+        self.assertIn("<name>A&amp;B</name>", text)
+        self.assertIn('<trkpt lat="1.0000000" lon="2.0000000"><ele>3.0</ele>', text)
+
+    def test_waypoints_round_trip_and_bad_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "sub" / "waypoints.json")
+            self.assertEqual(gps.load_waypoints(path), [])
+            gps.save_waypoints(path, [{"name": "Camp", "lat": 1.5, "lon": 2.5}])
+            self.assertEqual(gps.load_waypoints(path)[0]["name"], "Camp")
+
+    def test_dop_quality(self):
+        self.assertEqual(gps.dop_quality(1.2)[0], "good")
+        self.assertEqual(gps.dop_quality(8)[0], "poor")
+        self.assertEqual(gps.dop_quality(None)[0], "-")
+
+
 if __name__ == "__main__":
     unittest.main()

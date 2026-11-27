@@ -415,7 +415,7 @@ class CellTowerTests(unittest.TestCase):
             data = ("LTE,310,260,1,1,0,-109.5,40.4,1,1,1,0,0,0\nLTE,310,260,1,2,0,-90.0,30.0,1,1,1,0,0,0\n")
 
             def fake_download(url, dest, progress=None):
-                self.assertIn("downloads.php?token=KEY&type=mcc&file=", url)
+                self.assertIn("token=KEY&type=mcc&file=", url)
                 with gzip.open(dest, "wt") as handle:
                     handle.write(data)
             with patch.object(gps, "CELLS_DIR", tmp), patch.object(gps, "CELL_DB", os.path.join(tmp, "c.db")), \

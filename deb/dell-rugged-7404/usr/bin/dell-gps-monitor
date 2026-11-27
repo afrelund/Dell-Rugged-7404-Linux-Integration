@@ -337,7 +337,7 @@ def run_app():
     body.configure(yscrollcommand=scroll.set)
     scroll.pack(side="right", fill="y", pady=(6, 0))
     body.pack(fill="both", expand=True, pady=(6, 0))
-    jam_title = tk.Label(bottom, text="Jamming indicator", font=bold, anchor="w")
+    jam_title = tk.Label(bottom, text="JAMMING INDICATOR", font=bold, anchor="w")
     jam_title.pack(fill="x", pady=(10, 0))
     jam_bar = tk.Canvas(bottom, width=420, height=26, bg="#eeeeee", highlightthickness=0)
     jam_bar.pack(fill="x")

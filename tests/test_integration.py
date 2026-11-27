@@ -393,6 +393,15 @@ class ImageryTests(unittest.TestCase):
         self.assertEqual(gps.geojson_bbox(data), (40, -110, 41, -109))
 
 
+class ElevationMarkerTests(unittest.TestCase):
+    def test_position_along_path_and_height(self):
+        path = [(40.0, -109.0), (40.0, -108.9), (40.0, -108.8)]
+        total = gps.bearing_distance(*path[0], *path[2])[0]
+        km = gps.km_along_path(path, 40.0, -108.9)
+        self.assertAlmostEqual(km, total / 2, delta=0.05)
+        self.assertEqual(gps.interpolate_height([(0, 100), (2, 200)], 1), 150)
+
+
 class CellTowerTests(unittest.TestCase):
     def test_import_query_and_colours(self):
         import tempfile

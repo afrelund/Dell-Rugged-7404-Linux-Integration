@@ -1329,6 +1329,26 @@ def elevation_profile(route, count=80):
     return [(p[0], h) for p, h in zip(samples, heights)]
 
 
+def km_along_path(path, lat, lon):
+    """Distance in km from the start of path to the path vertex nearest (lat, lon)."""
+    best, best_km, walked, previous = None, 0.0, 0.0, None
+    for point in path:
+        if previous:
+            walked += bearing_distance(*previous, *point)[0]
+        near = bearing_distance(lat, lon, *point)[0]
+        if best is None or near < best:
+            best, best_km = near, walked
+        previous = point
+    return best_km
+
+
+def interpolate_height(profile, km):
+    for (k0, h0), (k1, h1) in zip(profile, profile[1:]):
+        if k0 <= km <= k1:
+            return h0 + (h1 - h0) * ((km - k0) / (k1 - k0) if k1 > k0 else 0)
+    return profile[0][1] if km <= profile[0][0] else profile[-1][1]
+
+
 def profile_stats(profile):
     heights = [h for _, h in profile]
     gain = sum(max(b - a, 0) for a, b in zip(heights, heights[1:]))
@@ -2042,6 +2062,19 @@ def run_app():
                 cr.fill()
                 for (x0, y0), (x1, y1) in zip(points, points[1:]):
                     line(cr, x0, y0, x1, y1, AMBER, 2)
+                here = ui.get("elev_km")
+                if here is not None:
+                    px = left_pad + min(here, km_total) / km_total * plot_w
+                    py = top + plot_h * (1 - (interpolate_height(profile, here) - low) / (high - low))
+                    cr.set_source_rgb(0.83, 0.18, 0.18)
+                    cr.move_to(px, py)
+                    cr.line_to(px - 8, py - 16)
+                    cr.line_to(px + 8, py - 16)
+                    cr.close_path()
+                    cr.fill_preserve()
+                    cr.set_source_rgb(1, 1, 1)
+                    cr.set_line_width(1.5)
+                    cr.stroke()
                 text_at(cr, 2, top, f"{high:.0f} m", 9, pal["ringtext"], anchor="l")
                 text_at(cr, 2, top + plot_h, f"{low:.0f} m", 9, pal["ringtext"], anchor="l")
                 text_at(cr, left_pad, height - 2, "0 km", 9, pal["ringtext"], anchor="sw")
@@ -2054,7 +2087,7 @@ def run_app():
             ui["elevation_area"] = elevation_area
 
             def load_elevation(route):
-                ui["elevation"], ui["elevation_note"] = None, "loading elevation..."
+                ui["elevation"], ui["elevation_note"], ui["elev_km"] = None, "loading elevation...", None
                 elevation_area.set_visible(True)
                 elevation_area.queue_draw()
 
@@ -2074,6 +2107,11 @@ def run_app():
 
             def update_directions(lat, lon):
                 route, rows = nav["route"], ui.get("dir_rows")
+                if route and ui.get("elevation"):
+                    here = km_along_path(route_path(route), lat, lon)
+                    if ui.get("elev_km") is None or abs(here - ui["elev_km"]) > 0.005:
+                        ui["elev_km"] = here
+                        elevation_area.queue_draw()
                 if not route or not rows:
                     return
                 nearest = min(range(len(route["points"])),

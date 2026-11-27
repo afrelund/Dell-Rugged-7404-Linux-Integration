@@ -22,6 +22,8 @@ def load(name, path):
 audio = load("audio", ROOT / "files/dell-speaker-check")
 touch = load("touch", ROOT / "files/egalax-touchscreen-check")
 installer = load("installer", ROOT / "install.py")
+SWITCH_OFF = " : values=off,off\n"
+SWITCH_ON = " : values=on,on\n"
 VOLUME = "  ; type=INTEGER,min=0,max=87,step=0\n  : values=12,14\n"
 
 
@@ -31,32 +33,38 @@ class AudioSafetyTests(unittest.TestCase):
             self.assertIn("left alone", audio.check())
         mixer.assert_called_once_with("cget", audio.JACK)
 
-    def test_unplugged_speaker_restores_only_volume(self):
+    def test_unplugged_speaker_unmutes_and_sets_volume(self):
         with patch.object(audio, "jack_connected", side_effect=[False, False, False]), \
-                patch.object(audio, "amixer", return_value=VOLUME) as mixer:
-            self.assertIn("Restored", audio.check())
-        self.assertEqual(mixer.call_args_list[-1].args,
-                         ("cset", audio.VOLUME, "87,87"))
+                patch.object(audio, "amixer", side_effect=[VOLUME, SWITCH_OFF, "", ""]) as mixer:
+            self.assertIn("Unmuted", audio.check())
+        self.assertEqual(mixer.call_args_list[-2].args, ("cset", audio.SWITCH, "on,on"))
+        self.assertEqual(mixer.call_args_list[-1].args, ("cset", audio.VOLUME, "87,87"))
+
+    def test_healthy_state_makes_no_writes(self):
+        with patch.object(audio, "jack_connected", return_value=False), \
+                patch.object(audio, "amixer",
+                             side_effect=["  ; type=INTEGER,min=0,max=87,step=0\n  : values=87,87\n", SWITCH_ON]) as mixer:
+            self.assertIn("healthy", audio.check())
         self.assertEqual(mixer.call_count, 2)
 
     def test_status_is_read_only(self):
         with patch.object(audio, "jack_connected", return_value=False), \
-                patch.object(audio, "amixer", return_value=VOLUME) as mixer:
-            audio.check(status_only=True)
-        mixer.assert_called_once_with("cget", audio.VOLUME)
+                patch.object(audio, "amixer", side_effect=[VOLUME, SWITCH_OFF]) as mixer:
+            self.assertIn("muted", audio.check(status_only=True))
+        self.assertEqual(mixer.call_count, 2)
 
     def test_insertion_before_write_prevents_change(self):
         with patch.object(audio, "jack_connected", side_effect=[False, True]), \
-                patch.object(audio, "amixer", return_value=VOLUME) as mixer:
+                patch.object(audio, "amixer", side_effect=[VOLUME, SWITCH_OFF]) as mixer:
             audio.check()
-        mixer.assert_called_once_with("cget", audio.VOLUME)
+        self.assertEqual(mixer.call_count, 2)
 
-    def test_insertion_during_write_restores_previous_levels(self):
+    def test_insertion_during_write_restores_previous_settings(self):
         with patch.object(audio, "jack_connected", side_effect=[False, False, True]), \
-                patch.object(audio, "amixer", return_value=VOLUME) as mixer:
+                patch.object(audio, "amixer", side_effect=[VOLUME, SWITCH_OFF, "", "", "", ""]) as mixer:
             self.assertIn("restored previous", audio.check())
-        self.assertEqual(mixer.call_args_list[-1].args,
-                         ("cset", audio.VOLUME, "12,14"))
+        self.assertEqual(mixer.call_args_list[-2].args, ("cset", audio.VOLUME, "12,14"))
+        self.assertEqual(mixer.call_args_list[-1].args, ("cset", audio.SWITCH, "off,off"))
 
     def test_unknown_jack_state_fails_without_write(self):
         with patch.object(audio, "amixer", return_value=" : values=unknown\n") as mixer:

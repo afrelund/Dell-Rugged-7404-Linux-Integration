@@ -1112,10 +1112,16 @@ def run_app():
 
         # left: sky view
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
-        ui["status"] = label("", "status")
-        left.append(ui["status"])
+        ui["status"] = label("", "status", xalign=1.0)
+        ui["status"].set_halign(Gtk.Align.END)
+        ui["status"].set_valign(Gtk.Align.START)
+        ui["status"].set_margin_top(8)
+        ui["status"].set_margin_end(12)
         ui["sky_area"] = drawing(draw_sky, 400, 400, expand=True)
-        left.append(ui["sky_area"])
+        sky_overlay = Gtk.Overlay(vexpand=True)
+        sky_overlay.set_child(ui["sky_area"])
+        sky_overlay.add_overlay(ui["status"])
+        left.append(sky_overlay)
         legend = Gtk.Box(spacing=8)
         for name, color in CONSTELLATIONS.values():
             tag = Gtk.Label(use_markup=True)

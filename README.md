@@ -16,7 +16,7 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
 2. Install it:
 
    ```sh
-   sudo apt install ./dell-rugged-7404_1.3.1_all.deb
+   sudo apt install ./dell-rugged-7404_1.3.2_all.deb
    ```
 
 3. Log out and back in (or run
@@ -31,6 +31,8 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
 ## GPS Monitor (desktop app)
 
 Open **Dell Rugged GPS Monitor** from the application menu, or run `dell-gps-monitor`.
+
+The window follows the Ubuntu **Settings → Appearance** light/dark choice and switches live.
 It shows a satellite sky plot (colored by GPS, Galileo, GLONASS, BeiDou, SBAS, QZSS;
 filled = used in the fix; dB-Hz under each satellite), your position as decimal
 degrees, degrees/decimal minutes, degrees/minutes/seconds, UTM, MGRS / US National

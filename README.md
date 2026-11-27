@@ -4,8 +4,9 @@ Fixes for Ubuntu on the Latitude 14 Rugged Extreme (7404) only:
 
 - **Touchscreen** (eGalax `0eef:0001`): correct classification and no autosuspend.
 - **Built-in speaker**: the speaker is driven through the HDA *Headphone* control.
-  While the headphone jack is unplugged, a user service keeps **Headphone Playback
-  Switch unmuted** and **Headphone Playback Volume at 100%**. Plugged-in
+  The helper locates the **HDA Intel PCH** sound card (not HDMI) automatically.
+  While the headphone jack is unplugged, a user service keeps the **Headphone and
+  Headset switches unmuted** and **Headphone Playback Volume at 100%**. Plugged-in
   headphones are never touched.
 
 ## Install (stand-alone .deb)
@@ -15,7 +16,7 @@ Fixes for Ubuntu on the Latitude 14 Rugged Extreme (7404) only:
 2. Install it:
 
    ```sh
-   sudo apt install ./dell-rugged-7404_1.0.1_all.deb
+   sudo apt install ./dell-rugged-7404_1.0.2_all.deb
    ```
 
 3. Log out and back in (or run

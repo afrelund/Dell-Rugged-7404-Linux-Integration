@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import os
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -390,6 +391,27 @@ class ImageryTests(unittest.TestCase):
     def test_geojson_bbox(self):
         data = {"features": [{"geometry": {"coordinates": [[[[-110, 40], [-109, 41], [-109.5, 40.5]]]]}}]}
         self.assertEqual(gps.geojson_bbox(data), (40, -110, 41, -109))
+
+
+class CellTowerTests(unittest.TestCase):
+    def test_import_query_and_colours(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "t.csv")
+            with open(csv_path, "w") as handle:
+                handle.write("radio,mcc,net,area,cell,unit,lon,lat,range,samples,changeable,created,updated,averageSignal\n"
+                             "LTE,310,260,100,7,0,-109.5,40.4,500,3,1,0,0,0\n"
+                             "GSM,310,260,100,8,0,-100.0,35.0,500,3,1,0,0,0\n")
+            with patch.object(gps, "CELLS_DIR", tmp), patch.object(gps, "CELL_DB", os.path.join(tmp, "c.db")):
+                self.assertEqual(gps.import_cell_csv(csv_path), 2)
+                found = gps.cells_in_bbox(40, -110, 41, -109)
+                self.assertEqual([(r[0], r[4]) for r in found], [("LTE", 7)])
+        self.assertEqual(gps.signal_color(None), "#d32f2f")
+        self.assertEqual([gps.signal_color(q) for q in (10, 50, 90)], ["#ef8f00", "#fbc02d", "#2e7d32"])
+
+    def test_mmcli_keyvalue(self):
+        self.assertEqual(gps.parse_mmcli_keyvalue("modem.generic.state : failed\nbad line\n")["modem.generic.state"],
+                         "failed")
 
 
 if __name__ == "__main__":

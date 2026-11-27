@@ -784,7 +784,8 @@ def remove_imagery(key):
 # ----- cell towers (OpenCellID-format CSV) and modem signal -----
 CELLS_DIR = os.path.join(MAPS_DIR, "cells")
 CELL_DB = os.path.join(CELLS_DIR, "cells.db")
-OCID_URL = "https://opencellid.org/downloads.php?token={token}&type=mcc&file={mcc}.csv.gz"
+OCID_URLS = ("https://opencellid.org/ocid/downloads?token={token}&type=mcc&file={mcc}.csv.gz",
+             "https://opencellid.org/downloads.php?token={token}&type=mcc&file={mcc}.csv.gz")
 US_MCCS = (310, 311, 312, 313, 316)
 CELL_TOKEN = os.path.join(CELLS_DIR, "token")
 
@@ -912,17 +913,26 @@ def download_cells(token, mcc, progress=None, bboxes=None):
     say(f"Downloading towers for MCC {mcc} (large file, please wait)…")
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, f"{mcc}.csv.gz")
-        try:
-            download_file(OCID_URL.format(token=token, mcc=mcc), path)
-        except urllib.error.HTTPError as error:
-            raise RouteError(f"OpenCellID refused the download (HTTP {error.code}). "
+        reason = "no data file was returned"
+        for template in OCID_URLS:
+            try:
+                download_file(template.format(token=token, mcc=mcc), path)
+            except urllib.error.HTTPError as error:
+                reason = f"HTTP {error.code}"
+                continue
+            except OSError as error:
+                raise RouteError(f"OpenCellID download failed ({error}). Check internet.")
+            with open(path, "rb") as handle:
+                head = handle.read(300)
+            if head[:2] == b"\x1f\x8b":
+                break
+            try:
+                reason = json.loads(head.decode("utf-8", "replace")).get("message", reason)
+            except ValueError:
+                reason = "the token was not accepted"
+        else:
+            raise RouteError(f"OpenCellID refused the download for MCC {mcc}: {reason}. "
                              "Check the API token; each file can be fetched twice a day.")
-        except OSError as error:
-            raise RouteError(f"OpenCellID download failed ({error}). Check internet.")
-        with open(path, "rb") as handle:
-            if handle.read(2) != b"\x1f\x8b":
-                raise RouteError("OpenCellID did not return a data file - the API token was not accepted, "
-                                 "or this file's download limit (twice a day) was reached.")
         return import_cell_csv(path, say, bboxes)
 
 

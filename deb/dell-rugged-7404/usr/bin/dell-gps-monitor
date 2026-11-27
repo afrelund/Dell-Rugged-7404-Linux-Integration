@@ -608,6 +608,7 @@ def download_county(state_fips, geoid, name, progress=None):
         build_routing_db(say)
     finally:
         shutil.rmtree(cache, ignore_errors=True)
+    auto_cells_after_download(say)
     say(f"{name}, {STATES[state_fips]} is ready for offline routing.")
 
 
@@ -763,6 +764,7 @@ def download_imagery(source, geoid, name, zmax, progress=None):
     areas[f"{source}:{geoid}"] = {"source": source, "name": name, "bbox": bbox, "zmax": zmax,
                                   "downloaded": datetime.date.today().isoformat()}
     save_imagery_areas(areas)
+    auto_cells_after_download(say)
     say(f"{name}: {len(tiles) - failed} tiles saved" + (f", {failed} failed (run again to retry)." if failed else "."))
 
 
@@ -781,7 +783,9 @@ def remove_imagery(key):
 # ----- cell towers (OpenCellID-format CSV) and modem signal -----
 CELLS_DIR = os.path.join(MAPS_DIR, "cells")
 CELL_DB = os.path.join(CELLS_DIR, "cells.db")
-OCID_URL = "https://opencellid.org/ocid/downloads?token={token}&type=mcc&file={mcc}.csv.gz"
+OCID_URL = "https://opencellid.org/downloads.php?token={token}&type=mcc&file={mcc}.csv.gz"
+US_MCCS = (310, 311, 312, 313, 316)
+CELL_TOKEN = os.path.join(CELLS_DIR, "token")
 
 
 def cell_db():
@@ -795,7 +799,7 @@ def cell_db():
     return db
 
 
-def import_cell_csv(path, progress=None):
+def import_cell_csv(path, progress=None, bboxes=None):
     """Load an OpenCellID CSV (plain or .gz): radio,mcc,net,area,cell,unit,lon,lat,range,samples,..."""
     import csv
     import gzip
@@ -808,6 +812,10 @@ def import_cell_csv(path, progress=None):
     with opener(path, "rt", newline="") as handle:
         for line in csv.reader(handle):
             try:
+                if bboxes:
+                    lat, lon = float(line[7]), float(line[6])
+                    if not any(b[0] <= lat <= b[2] and b[1] <= lon <= b[3] for b in bboxes):
+                        continue
                 rows.append((line[0].upper(), int(line[1]), int(line[2]), int(line[3]), int(line[4]),
                              float(line[6]), float(line[7]), int(float(line[8] or 0)), int(float(line[9] or 0))))
             except (IndexError, ValueError):
@@ -820,7 +828,7 @@ def import_cell_csv(path, progress=None):
     flush()
     db.commit()
     db.close()
-    if not total:
+    if not total and not bboxes:
         raise RouteError("No towers found - expected an OpenCellID CSV.")
     return total
 
@@ -853,18 +861,110 @@ def cells_in_bbox(south, west, north, east, limit=500):
         db.close()
 
 
-def download_cells(token, mcc, progress=None):
+def load_cell_token():
+    try:
+        with open(CELL_TOKEN) as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def save_cell_token(token):
+    os.makedirs(CELLS_DIR, exist_ok=True)
+    fd = os.open(CELL_TOKEN, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(token.strip())
+
+
+def downloaded_county_bboxes():
+    """{geoid: bbox} for every county with offline routing or imagery."""
+    boxes = {}
+    for area in imagery_areas().values():
+        boxes[area["name"]] = tuple(area["bbox"])
+    cache_path = os.path.join(CELLS_DIR, "bboxes.json")
+    try:
+        with open(cache_path) as handle:
+            cache = json.load(handle)
+    except (OSError, ValueError):
+        cache = {}
+    try:
+        geoids = os.listdir(os.path.join(MAPS_DIR, "areas"))
+    except OSError:
+        geoids = []
+    for geoid in geoids:
+        if geoid not in cache:
+            try:
+                cache[geoid] = geojson_bbox(county_polygon(geoid))
+            except Exception:
+                continue
+        boxes["county " + geoid] = tuple(cache[geoid])
+    os.makedirs(CELLS_DIR, exist_ok=True)
+    with open(cache_path, "w") as handle:
+        json.dump(cache, handle)
+    return boxes
+
+
+def download_cells(token, mcc, progress=None, bboxes=None):
     import tempfile
-    import urllib.request
+    import urllib.error
     say = progress or (lambda _t: None)
-    say(f"Downloading towers for MCC {mcc}…")
+    say(f"Downloading towers for MCC {mcc} (large file, please wait)…")
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, f"{mcc}.csv.gz")
         try:
             download_file(OCID_URL.format(token=token, mcc=mcc), path)
+        except urllib.error.HTTPError as error:
+            raise RouteError(f"OpenCellID refused the download (HTTP {error.code}). "
+                             "Check the API token; each file can be fetched twice a day.")
         except OSError as error:
-            raise RouteError(f"OpenCellID download failed ({error}). Check the API key and internet.")
-        return import_cell_csv(path, say)
+            raise RouteError(f"OpenCellID download failed ({error}). Check internet.")
+        with open(path, "rb") as handle:
+            if handle.read(2) != b"\x1f\x8b":
+                with open(path, "rb") as text:
+                    reply = text.read(200).decode("utf-8", "replace").strip()
+                raise RouteError(f"OpenCellID did not return a data file: {reply or 'empty reply'}")
+        return import_cell_csv(path, say, bboxes)
+
+
+def download_cells_for_areas(token, progress=None, mccs=US_MCCS):
+    """Fetch towers only for counties already downloaded for routing or imagery."""
+    say = progress or (lambda _t: None)
+    boxes = list(downloaded_county_bboxes().values())
+    if not boxes:
+        raise RouteError("No counties downloaded yet. Download a county for routing or imagery first.")
+    if not token:
+        raise RouteError("Enter your OpenCellID API token first.")
+    save_cell_token(token)
+    db = cell_db()
+    for south, west, north, east in boxes:
+        db.execute("DELETE FROM cells WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?",
+                   (south, north, west, east))
+    db.commit()
+    db.close()
+    total, last_error = 0, None
+    for mcc in mccs:
+        try:
+            total += download_cells(token, mcc, say, boxes)
+        except RouteError as error:
+            last_error = error
+            if "HTTP 4" in str(error) or "did not return" in str(error):
+                if total == 0 and mcc == mccs[0]:
+                    raise
+    if not total and last_error:
+        raise last_error
+    say(f"{total:,} towers added for {len(boxes)} downloaded area(s).")
+    return total
+
+
+def auto_cells_after_download(progress=None):
+    """Best-effort tower fetch after a county download, when a token is saved."""
+    token = load_cell_token()
+    if token:
+        try:
+            download_cells_for_areas(token, progress)
+        except Exception as error:
+            if progress:
+                progress(f"Tower download skipped: {error}")
 
 
 def signal_color(quality):
@@ -1760,11 +1860,17 @@ def run_app():
                     chooser.open(dialog, None, chosen)
                 box.append(button("Import CSV file…", choose_file))
                 token = Gtk.Entry(placeholder_text="OpenCellID API token")
+                token.set_text(load_cell_token())
                 token.set_size_request(-1, 44)
                 mcc = Gtk.Entry(placeholder_text="Country code (MCC), e.g. 310 for the US")
                 mcc.set_size_request(-1, 44)
                 box.append(token)
                 box.append(mcc)
+                box.append(button("Download towers for my downloaded counties", lambda: run_job(
+                    lambda: download_cells_for_areas(token.get_text().strip(), say))))
+                box.append(label("The token is saved, and towers are then fetched automatically whenever you "
+                                 "download a county for routing or imagery. Or use a country code:",
+                                 "hint", wrap=True))
                 box.append(button("Download by country code", lambda: run_job(
                     lambda: download_cells(token.get_text().strip(), mcc.get_text().strip(), say))))
                 box.append(button("Remove all tower data", lambda: run_job(clear_cells)))

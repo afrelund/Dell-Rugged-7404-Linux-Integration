@@ -1618,30 +1618,34 @@ def run_app():
             def tower_symbol(color):
                 def draw(_area, cr, width, height):
                     r, g, b = hex_rgb(color)
-                    cr.set_source_rgb(0, 0, 0)
-                    cr.set_line_width(4)
-                    cr.move_to(width / 2, height * 0.25)
-                    cr.line_to(width * 0.2, height - 1)
-                    cr.line_to(width * 0.8, height - 1)
-                    cr.close_path()
-                    cr.stroke()
-                    cr.set_source_rgb(r, g, b)
-                    cr.set_line_width(2.5)
-                    cr.move_to(width / 2, height * 0.25)
-                    cr.line_to(width * 0.2, height - 1)
-                    cr.line_to(width * 0.8, height - 1)
-                    cr.close_path()
-                    cr.fill_preserve()
-                    cr.stroke()
-                    for radius in (width * 0.28, width * 0.45):
-                        cr.set_source_rgb(0, 0, 0)
-                        cr.set_line_width(4)
-                        cr.arc(width / 2, height * 0.25, radius, math.radians(200), math.radians(340))
-                        cr.stroke()
-                        cr.set_source_rgb(r, g, b)
-                        cr.set_line_width(2)
-                        cr.arc(width / 2, height * 0.25, radius, math.radians(200), math.radians(340))
-                        cr.stroke()
+                    cx = width / 2
+
+                    def tower():
+                        cr.move_to(cx - width * 0.05, height * 0.30)
+                        cr.line_to(cx + width * 0.05, height * 0.30)
+                        cr.line_to(cx + width * 0.10, height * 0.94)
+                        cr.line_to(cx + width * 0.24, height * 0.99)
+                        cr.line_to(cx - width * 0.24, height * 0.99)
+                        cr.line_to(cx - width * 0.10, height * 0.94)
+                        cr.close_path()
+                        for side in (-1, 1):
+                            x = cx + side * width * 0.11
+                            cr.rectangle(x - width * 0.045, height * 0.24, width * 0.09, height * 0.22)
+
+                    for rgb, line, fill in (((0, 0, 0), 3.5, False), ((r, g, b), 0, True)):
+                        cr.set_source_rgb(*rgb)
+                        tower()
+                        if fill:
+                            cr.fill()
+                        else:
+                            cr.set_line_width(line)
+                            cr.stroke()
+                    for radius in (width * 0.22, width * 0.38):
+                        for rgb, lw in (((0, 0, 0), 4), ((r, g, b), 2)):
+                            cr.set_source_rgb(*rgb)
+                            cr.set_line_width(lw)
+                            cr.arc(cx, height * 0.20, radius, math.radians(205), math.radians(335))
+                            cr.stroke()
                 return draw
 
             def draw_cells():

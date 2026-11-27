@@ -314,6 +314,13 @@ class SetupAppTests(unittest.TestCase):
             self.assertEqual(setup.install_command("speaker")[0], setup.STATUS_TOOL)
             self.assertEqual(setup.install_command("gps")[0], "pkexec")
 
+    def test_state_colours_have_button_styles(self):
+        css = setup.build_css()
+        for state, (_badge, colour, _action) in setup.STATES.items():
+            self.assertIn(f"state-{setup.COLOUR_NAME[colour]}", css)
+            self.assertIn(colour, css)
+        self.assertIn("min-height: 48px", css)
+
 
 if __name__ == "__main__":
     unittest.main()

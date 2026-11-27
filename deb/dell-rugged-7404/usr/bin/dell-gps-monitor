@@ -404,187 +404,471 @@ AMBER = "#f2b01e"
 RECEIVER_RATES = (("1 Hz", 1000), ("2 Hz", 500), ("5 Hz", 200))
 RECEIVER_CONSTELLATIONS = ("GALILEO", "GLONASS", "BEIDOU")
 
+def hex_rgb(color):
+    return tuple(int(color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+
+
+CSS = f"""
+.tab-button {{ min-height: 56px; font-weight: bold; }}
+.tab-button:checked {{ background: {AMBER}; color: #1a1200; }}
+.section {{ background: {AMBER}; color: #1a1200; font-weight: bold; padding: 4px 8px; }}
+.value-button {{ padding: 4px 8px; min-height: 40px; }}
+.value-button label {{ font-family: monospace; }}
+.row-title {{ font-weight: bold; font-family: monospace; padding: 6px 8px 0 8px; }}
+.action {{ min-height: 48px; }}
+.mono {{ font-family: monospace; }}
+.hint {{ font-size: 9pt; opacity: 0.8; }}
+.status {{ font-size: 14pt; font-weight: bold; }}
+.bold {{ font-weight: bold; }}
+.wp-row {{ min-height: 44px; font-family: monospace; }}
+"""
+
 
 def run_app():
     import csv
-    import tkinter as tk
-    from tkinter import font as tkfont, messagebox, simpledialog
+    import gi
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Gdk", "4.0")
+    from gi.repository import Gdk, GLib, Gtk
 
     state, stop = GpsState(), threading.Event()
     for target in (gpsd_reader, hw_poller):
         threading.Thread(target=target, args=(state, stop), daemon=True).start()
 
-    root = tk.Tk(className="dell-gps-monitor")
-    root.option_add("*Button.padY", 8)
-    root.title("Dell Rugged GPS Monitor")
-    root.geometry("1180x720")
+    GLib.set_prgname("dell-gps-monitor")
+    GLib.set_application_name("Dell Rugged GPS Monitor")
+    app = Gtk.Application()
     theme = {"dark": system_is_dark()}
     pal = dict(DARK if theme["dark"] else LIGHT)
-    mono = tkfont.Font(family="DejaVu Sans Mono", size=11)
-    bold = tkfont.Font(family="DejaVu Sans Mono", size=11, weight="bold")
-    big = tkfont.Font(family="DejaVu Sans", size=14, weight="bold")
-    small = tkfont.Font(family="DejaVu Sans", size=9, weight="bold")
-    plain_fg = []
-
-    def label(parent, **kwargs):
-        widget = tk.Label(parent, **kwargs)
-        plain_fg.append(widget)
-        return widget
-
     waypoints_file = os.path.join(DATA_DIR, "waypoints.json")
     waypoints = load_waypoints(waypoints_file)
     track = []
     log = {"writer": None, "handle": None, "path": None, "last": None, "export": None}
-    nav = {"target": None, "tpv": {}, "alert": False, "message": None}
-
-    # ----- left: sky view -----
-    left = tk.Frame(root)
-    left.pack(side="left", fill="both", expand=True, padx=8, pady=8)
-    canvas = tk.Canvas(left, width=480, height=520, bg=pal["sky"], highlightthickness=0)
-    canvas.pack(fill="both", expand=True)
-    legend = tk.Frame(left)
-    legend.pack(fill="x")
-    for name, color in CONSTELLATIONS.values():
-        tk.Label(legend, text="● " + name, fg=color, font=bold).pack(side="left", padx=4)
-    hint = label(left, anchor="w", font=("DejaVu Sans", 9),
-                 text="Filled = used in fix, hollow = tracked only; number below satellite = dB-Hz")
-    hint.pack(fill="x")
-
-    # ----- right: status + tabs -----
-    right = tk.Frame(root)
-    right.pack(side="right", fill="both", padx=8, pady=8)
-    status = tk.Label(right, font=big, anchor="w")
-    status.pack(fill="x")
-    tabbar = tk.Frame(right)
-    tabbar.pack(fill="x", pady=(4, 6))
-    container = tk.Frame(right)
-    container.pack(fill="both", expand=True)
-    pages, tab_buttons, current = {}, {}, {"page": "LIVE"}
-
-    def show(name):
-        current["page"] = name
-        for key, page in pages.items():
-            page.pack_forget()
-        pages[name].pack(fill="both", expand=True)
-        for key, button in tab_buttons.items():
-            active = key == name
-            button.config(bg=AMBER if active else pal["btn"], fg="#1a1200" if active else pal["fg"],
-                          activebackground=AMBER, relief="sunken" if active else "raised")
-
-    for name in TABS:
-        pages[name] = tk.Frame(container)
-        tab_buttons[name] = tk.Button(tabbar, text=name, font=bold, padx=6, pady=12,
-                                      command=lambda n=name: show(n))
-        # Touch screens can jitter between press and release, which cancels a normal click.
-        tab_buttons[name].bind("<ButtonPress-1>", lambda e, n=name: show(n))
-        tab_buttons[name].pack(side="left", fill="x", expand=True, padx=2)
-
-    # ----- LIVE tab -----
-    live = pages["LIVE"]
-    body = tk.Text(live, font=mono, width=46, height=22, relief="flat", wrap="none",
-                   bg=root.cget("bg"), highlightthickness=0, cursor="arrow")
-    body.tag_configure("title", font=bold)
-    body.tag_configure("section", font=bold, background=AMBER, foreground="#1a1200",
-                       spacing1=10, spacing3=4)
-    bottom = tk.Frame(live)
-    bottom.pack(side="bottom", fill="x")
-    scroll = tk.Scrollbar(live, command=body.yview)
-    body.configure(yscrollcommand=scroll.set)
-    scroll.pack(side="right", fill="y")
-    body.pack(fill="both", expand=True)
-    jam_title = label(bottom, text="JAMMING INDICATOR", font=bold, anchor="w")
-    jam_title.pack(fill="x", pady=(10, 0))
-    jam_bar = tk.Canvas(bottom, width=420, height=26, bg="#eeeeee", highlightthickness=0)
-    jam_bar.pack(fill="x")
-    jam_text = tk.Label(bottom, font=mono, anchor="w", justify="left")
-    jam_text.pack(fill="x")
-    label(bottom, anchor="w", font=("DejaVu Sans", 9),
-          text="Click any value above to copy it").pack(fill="x")
+    nav = {"target": None, "tpv": {}, "alert": False, "message": None, "selected": None}
     shown = {"text": ""}
+    ui = {}
 
-    def flash(text):
-        copy_button.config(text=text)
-        root.after(1500, lambda: copy_button.config(text="Copy coordinates and time"))
+    def label(text="", css=None, wrap=False, xalign=0.0):
+        widget = Gtk.Label(label=text, xalign=xalign, wrap=wrap, selectable=False)
+        if css:
+            widget.add_css_class(css)
+        return widget
+
+    def button(text, callback, css="action"):
+        widget = Gtk.Button(label=text)
+        widget.add_css_class(css)
+        widget.connect("clicked", lambda _b: callback())
+        return widget
+
+    def scrolled(child):
+        window = Gtk.ScrolledWindow(hexpand=True, vexpand=True, kinetic_scrolling=True,
+                                    hscrollbar_policy=Gtk.PolicyType.NEVER)
+        window.set_child(child)
+        return window
+
+    def message_dialog(title, text, on_yes=None):
+        dialog = Gtk.Window(title=title, modal=True, transient_for=ui["win"], resizable=False)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin_top=16,
+                      margin_bottom=16, margin_start=16, margin_end=16)
+        box.append(label(text, wrap=True))
+        row = Gtk.Box(spacing=8, homogeneous=True)
+
+        def finish(yes):
+            dialog.destroy()
+            if yes and on_yes:
+                on_yes()
+        if on_yes:
+            row.append(button("Cancel", lambda: finish(False)))
+            row.append(button("Continue", lambda: finish(True)))
+        else:
+            row.append(button("OK", lambda: finish(False)))
+        box.append(row)
+        dialog.set_child(box)
+        dialog.present()
+
+    def ask_name(default, on_done):
+        dialog = Gtk.Window(title="Waypoint", modal=True, transient_for=ui["win"], resizable=False)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=16,
+                      margin_bottom=16, margin_start=16, margin_end=16)
+        box.append(label("Name:"))
+        entry = Gtk.Entry(text=default, width_chars=28)
+        box.append(entry)
+        row = Gtk.Box(spacing=8, homogeneous=True)
+
+        def finish(ok):
+            name = entry.get_text().strip()
+            dialog.destroy()
+            if ok and name:
+                on_done(name)
+        row.append(button("Cancel", lambda: finish(False)))
+        row.append(button("Add", lambda: finish(True)))
+        entry.connect("activate", lambda _e: finish(True))
+        box.append(row)
+        dialog.set_child(box)
+        dialog.present()
 
     def copy_text(text, note="Copied"):
-        root.clipboard_clear()
-        root.clipboard_append(text)
-        flash(f"{note}: {text[:34]}")
+        ui["win"].get_clipboard().set(text)
+        ui["copy_button"].set_label(f"{note}: {text[:34]}")
+        GLib.timeout_add(1500, lambda: ui["copy_button"].set_label("Copy coordinates and time") and False)
 
-    copy_button = tk.Button(bottom, text="Copy coordinates and time",
-                            command=lambda: copy_text(shown["text"], "Copied all"))
-    copy_button.pack(anchor="w", pady=6)
+    # ----- cairo helpers -----
+    def text_at(cr, x, y, text, size=11, color=None, bold=False, anchor="c", mono=False):
+        cr.select_font_face("monospace" if mono else "DejaVu Sans", 0, 1 if bold else 0)
+        cr.set_font_size(size)
+        ext = cr.text_extents(text)
+        if anchor == "c":
+            px, py = x - ext.width / 2 - ext.x_bearing, y + ext.height / 2
+        elif anchor == "l":
+            px, py = x, y + ext.height / 2
+        elif anchor == "nw":
+            px, py = x, y + ext.height
+        elif anchor == "sw":
+            px, py = x, y
+        else:  # "se"
+            px, py = x - ext.width, y
+        cr.set_source_rgb(*hex_rgb(color or pal["fg"]))
+        cr.move_to(px, py)
+        cr.show_text(text)
 
-    # ----- SIGNALS tab -----
-    sig = pages["SIGNALS"]
-    dash = tk.Frame(sig)
-    dash.pack(fill="x")
-    dash_values = {}
-    for column, key in enumerate(("FIX", "HDOP", "VDOP", "PDOP", "ACCURACY")):
-        cell = tk.Frame(dash)
-        cell.grid(row=0, column=column, padx=6)
-        label(cell, text=key, font=small).pack()
-        dash_values[key] = tk.Label(cell, font=big)
-        dash_values[key].pack()
-    label(sig, text="SIGNAL STRENGTH (dB-Hz)", font=bold, anchor="w").pack(fill="x", pady=(10, 0))
-    sig_canvas = tk.Canvas(sig, width=420, height=200, highlightthickness=0)
-    sig_canvas.pack(fill="x")
-    label(sig, text="JAMMING HISTORY", font=bold, anchor="w").pack(fill="x", pady=(10, 0))
-    jam_canvas = tk.Canvas(sig, width=420, height=170, highlightthickness=0)
-    jam_canvas.pack(fill="x")
-    label(sig, anchor="w", font=("DejaVu Sans", 9),
-          text="Amber line = possible interference, red line = strong interference").pack(fill="x")
+    def fill_bg(cr, width, height):
+        cr.set_source_rgb(*hex_rgb(pal["sky"]))
+        cr.paint()
 
-    # ----- NAVIGATE tab -----
-    navp = pages["NAVIGATE"]
-    compass = tk.Canvas(navp, width=240, height=240, highlightthickness=0)
-    compass.pack()
-    nav_text = label(navp, font=mono, anchor="w", justify="left")
-    nav_text.pack(fill="x")
-    list_frame = tk.Frame(navp)
-    list_frame.pack(fill="both", expand=True, pady=4)
-    wp_list = tk.Listbox(list_frame, height=5, font=("DejaVu Sans Mono", 10), exportselection=False)
-    wp_list.pack(side="left", fill="both", expand=True)
-    wp_scroll = tk.Scrollbar(list_frame, command=wp_list.yview)
-    wp_scroll.pack(side="right", fill="y")
-    wp_list.config(yscrollcommand=wp_scroll.set)
-    wp_buttons = tk.Frame(navp)
-    wp_buttons.pack(fill="x")
+    def line(cr, x0, y0, x1, y1, color, width=1, dash=None):
+        cr.set_source_rgb(*hex_rgb(color))
+        cr.set_line_width(width)
+        cr.set_dash(dash or [])
+        cr.move_to(x0, y0)
+        cr.line_to(x1, y1)
+        cr.stroke()
+        cr.set_dash([])
 
+    def circle(cr, x, y, r, outline=None, fill=None, width=1):
+        cr.new_path()
+        cr.arc(x, y, r, 0, 2 * math.pi)
+        if fill:
+            cr.set_source_rgb(*hex_rgb(fill))
+            cr.fill_preserve()
+        if outline:
+            cr.set_source_rgb(*hex_rgb(outline))
+            cr.set_line_width(width)
+            cr.stroke()
+        cr.new_path()
+
+    def arrow(cr, cx, cy, x, y, color, width, head):
+        line(cr, cx, cy, cx + x, cy + y, color, width)
+        angle = math.atan2(y, x)
+        tip = (cx + x, cy + y)
+        cr.set_source_rgb(*hex_rgb(color))
+        cr.move_to(*tip)
+        for side in (0.4, -0.4):
+            cr.line_to(tip[0] - head * math.cos(angle + side), tip[1] - head * math.sin(angle + side))
+        cr.close_path()
+        cr.fill()
+
+    # ----- drawing -----
+    def draw_sky(_area, cr, width, height):
+        fill_bg(cr, width, height)
+        cx, cy, radius = width / 2, height / 2, max(min(width, height) / 2 - 26, 20)
+        for elevation in (0, 30, 60):
+            r = (90 - elevation) / 90 * radius
+            circle(cr, cx, cy, r, outline=pal["ring"])
+            if elevation:
+                text_at(cr, cx + 4, cy - r + 2, f"{elevation}°", 10, pal["ringtext"], anchor="nw")
+        line(cr, cx - radius, cy, cx + radius, cy, pal["cross"])
+        line(cr, cx, cy - radius, cx, cy + radius, pal["cross"])
+        for text, azimuth in (("N", 0), ("E", 90), ("S", 180), ("W", 270)):
+            x, y = sky_xy(azimuth, -4, radius)
+            text_at(cr, cx + x, cy + y, text, 13, bold=True)
+        for sat in ui["sky"]:
+            if "az" not in sat or "el" not in sat:
+                continue
+            _name, color = CONSTELLATIONS.get(sat.get("gnssid"), ("?", "#616161"))
+            x, y = sky_xy(sat["az"], sat["el"], radius)
+            r, used = 12, sat.get("used")
+            circle(cr, cx + x, cy + y, r, outline=color, fill=color if used else pal["hollow"], width=2)
+            text_at(cr, cx + x, cy + y, str(sat.get("svid", sat.get("PRN", ""))), 9,
+                    "#ffffff" if used else color, bold=True)
+            text_at(cr, cx + x, cy + y + r + 8, f"{sat.get('ss', 0):.0f}", 8, pal["ss"])
+
+    def draw_bars(_area, cr, width, height):
+        fill_bg(cr, width, height)
+        top, foot, left_pad = 8, 24, 26
+        plot = height - top - foot
+        for level in (20, 40):
+            y = top + plot * (1 - level / 55)
+            line(cr, left_pad, y, width, y, pal["cross"])
+            text_at(cr, 2, y, str(level), 9, pal["ringtext"], anchor="l")
+        sats = sorted((s for s in ui["sky"] if s.get("ss") is not None),
+                      key=lambda s: (s.get("gnssid", 9), s.get("svid", 0)))
+        if not sats:
+            text_at(cr, width / 2, height / 2, "no satellites", 11)
+            return
+        slot = (width - left_pad - 4) / len(sats)
+        for index, sat in enumerate(sats):
+            color = CONSTELLATIONS.get(sat.get("gnssid"), ("?", "#616161"))[1]
+            x0 = left_pad + index * slot + slot * 0.12
+            x1 = left_pad + (index + 1) * slot - slot * 0.12
+            y0 = top + plot * (1 - min(sat["ss"], 55) / 55)
+            cr.rectangle(x0, y0, x1 - x0, top + plot - y0)
+            cr.set_source_rgb(*hex_rgb(color))
+            if sat.get("used"):
+                cr.fill_preserve()
+            cr.set_line_width(2)
+            cr.stroke()
+            if slot >= 14:
+                text_at(cr, (x0 + x1) / 2, top + plot + 11, str(sat.get("svid", "")), 9)
+
+    def draw_jam_history(_area, cr, width, height):
+        fill_bg(cr, width, height)
+        history = ui["history"]
+        left_pad, top, foot = 30, 6, 16
+        plot = height - top - foot
+
+        def y_of(value):
+            return top + plot * (1 - value / 255)
+        for level, color in ((40, AMBER), (100, "#c62828")):
+            line(cr, left_pad, y_of(level), width, y_of(level), color, 1, [4, 3])
+            text_at(cr, 2, y_of(level), str(level), 9, pal["ringtext"], anchor="l")
+        if len(history) < 2:
+            text_at(cr, width / 2, height / 2, "collecting data...", 11)
+            return
+        start, end = history[0][0], history[-1][0]
+        span = max(end - start, 1)
+        points = [(left_pad + (t - start) / span * (width - left_pad - 4), y_of(v), v) for t, v in history]
+        for (x0, y0, _), (x1, y1, v1) in zip(points, points[1:]):
+            line(cr, x0, y0, x1, y1, jam_level(v1)[1], 2)
+        text_at(cr, left_pad, height - 2, f"-{span / 60:.0f} min", 9, pal["ringtext"], anchor="sw")
+        text_at(cr, width - 4, height - 2, "now", 9, pal["ringtext"], anchor="se")
+
+    def draw_jam_bar(_area, cr, width, height):
+        cr.set_source_rgb(*hex_rgb(pal["bar"]))
+        cr.paint()
+        value = ui["jam_value"]
+        if value is not None:
+            cr.set_source_rgb(*hex_rgb(jam_level(value)[1]))
+            cr.rectangle(0, 0, width * value / 255, height)
+            cr.fill()
+
+    def draw_compass(_area, cr, width, height):
+        fill_bg(cr, width, height)
+        cx, cy = width / 2, height / 2
+        radius = max(min(width, height) / 2 - 20, 20)
+        circle(cr, cx, cy, radius, outline=pal["ring"], width=2)
+        for text, angle in (("N", 0), ("E", 90), ("S", 180), ("W", 270)):
+            x, y = sky_xy(angle, -6, radius + 1)
+            text_at(cr, cx + x, cy + y, text, 13, bold=True)
+        for angle in range(0, 360, 30):
+            x0, y0 = sky_xy(angle, 0, radius)
+            x1, y1 = sky_xy(angle, 6, radius)
+            line(cr, cx + x0, cy + y0, cx + x1, cy + y1, pal["ring"])
+        if ui["bearing"] is not None:
+            x, y = sky_xy(ui["bearing"], 8, radius)
+            arrow(cr, cx, cy, x, y, "#1565c0", 5, 16)
+        if ui["heading"] is not None:
+            x, y = sky_xy(ui["heading"], 12, radius)
+            arrow(cr, cx, cy, x, y, AMBER, 3, 13)
+        circle(cr, cx, cy, 4, fill=pal["fg"])
+
+    def drawing(func, height=-1, width=-1, expand=False):
+        area = Gtk.DrawingArea(content_height=max(height, 0), content_width=max(width, 0), hexpand=True,
+                           vexpand=expand)
+        area.set_draw_func(func)
+        return area
+
+    ui.update(sky=[], history=[], jam_value=None, heading=None, bearing=None)
+
+    # ----- window -----
+    def activate(application):
+        provider = Gtk.CssProvider()
+        provider.load_from_string(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        win = Gtk.ApplicationWindow(application=application, title="Dell Rugged GPS Monitor",
+                                    default_width=1180, default_height=720, icon_name="dell-gps-monitor")
+        ui["win"] = win
+        root = Gtk.Box(spacing=8, margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
+        win.set_child(root)
+
+        # left: sky view
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
+        ui["sky_area"] = drawing(draw_sky, 400, 400, expand=True)
+        left.append(ui["sky_area"])
+        legend = Gtk.Box(spacing=8)
+        for name, color in CONSTELLATIONS.values():
+            tag = Gtk.Label(use_markup=True)
+            tag.set_markup(f'<span foreground="{color}" weight="bold">● {GLib.markup_escape_text(name)}</span>')
+            legend.append(tag)
+        left.append(legend)
+        left.append(label("Filled = used in fix, hollow = tracked only; number below satellite = dB-Hz",
+                          "hint", wrap=True))
+        root.append(left)
+
+        # right: status + tabs
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, width_request=500)
+        ui["status"] = label("", "status")
+        right.append(ui["status"])
+        tabbar = Gtk.Box(spacing=4, homogeneous=True, margin_top=4, margin_bottom=6)
+        stack = Gtk.Stack(vexpand=True, hexpand=True)
+        ui["stack"] = stack
+        group, tab_buttons = None, {}
+        for name in TABS:
+            toggle = Gtk.ToggleButton(label=name, hexpand=True)
+            toggle.add_css_class("tab-button")
+            if group is None:
+                group = toggle
+            else:
+                toggle.set_group(group)
+            toggle.connect("toggled", lambda b, n=name: b.get_active() and show(n))
+            tab_buttons[name] = toggle
+            tabbar.append(toggle)
+        right.append(tabbar)
+        right.append(stack)
+        root.append(right)
+
+        def show(name):
+            stack.set_visible_child_name(name)
+            refresh()
+
+        # LIVE
+        live = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        ui["live_box"] = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        ui["live_scroll"] = scrolled(ui["live_box"])
+        live.append(ui["live_scroll"])
+        live.append(label("JAMMING INDICATOR", "bold"))
+        ui["jam_bar"] = drawing(draw_jam_bar, 26)
+        live.append(ui["jam_bar"])
+        ui["jam_text"] = label("", "mono")
+        live.append(ui["jam_text"])
+        live.append(label("Tap any value above to copy it", "hint"))
+        ui["copy_button"] = button("Copy coordinates and time",
+                                   lambda: copy_text(shown["text"], "Copied all"))
+        live.append(ui["copy_button"])
+        stack.add_named(live, "LIVE")
+
+        # SIGNALS
+        sig = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        dash = Gtk.Box(homogeneous=True, spacing=6)
+        ui["dash"] = {}
+        for key in ("FIX", "HDOP", "VDOP", "PDOP", "ACCURACY"):
+            cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            cell.append(label(key, "hint", xalign=0.5))
+            ui["dash"][key] = Gtk.Label(use_markup=True)
+            cell.append(ui["dash"][key])
+            dash.append(cell)
+        sig.append(dash)
+        sig.append(label("SIGNAL STRENGTH (dB-Hz)", "bold"))
+        sig.append(drawing(draw_bars, 200, expand=True))
+        sig.append(label("JAMMING HISTORY", "bold"))
+        sig.append(drawing(draw_jam_history, 170, expand=True))
+        sig.append(label("Amber line = possible interference, red line = strong interference", "hint"))
+        stack.add_named(sig, "SIGNALS")
+
+        # NAVIGATE
+        navp = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        ui["compass"] = drawing(draw_compass, 240)
+        navp.append(ui["compass"])
+        ui["nav_text"] = label("", "mono")
+        navp.append(ui["nav_text"])
+        ui["wp_list"] = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        ui["wp_list"].connect("row-selected", lambda _l, row: nav.update(
+            selected=waypoints[row.get_index()] if row is not None else None))
+        navp.append(scrolled(ui["wp_list"]))
+        wp_buttons = Gtk.Box(spacing=4, homogeneous=True)
+        for text, command in (("Add waypoint here", add_waypoint), ("Go to selected", set_target),
+                              ("Clear target", clear_target), ("Delete", delete_waypoint)):
+            btn = button(text, command)
+            wp_buttons.append(btn)
+        navp.append(wp_buttons)
+        stack.add_named(navp, "NAVIGATE")
+
+        # TRACK
+        trackp = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        trackp.append(label("TRACK LOG", "bold"))
+        ui["log_text"] = label("", "mono", wrap=True)
+        trackp.append(ui["log_text"])
+        row = Gtk.Box(spacing=4, homogeneous=True)
+        ui["log_button"] = button("Start track log", toggle_log)
+        row.append(ui["log_button"])
+        row.append(button("Export GPX", export_gpx))
+        row.append(button("Open folder", open_folder))
+        trackp.append(row)
+        trackp.append(label(f"Logs are saved as CSV (one point per second while there is a fix) in "
+                            f"{DATA_DIR}. Export GPX writes this session's track plus your waypoints "
+                            "for use in mapping apps.", "hint", wrap=True))
+        stack.add_named(scrolled(trackp), "TRACK")
+
+        # TOOLS
+        tools = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        tools.append(label("SUN (at your position)", "bold"))
+        ui["sun_text"] = label("", "mono")
+        tools.append(ui["sun_text"])
+        tools.append(label("RECEIVER SETUP", "bold"))
+        tools.append(label("These write to the GPS receiver (asks first). Changes are not saved to its "
+                           "flash; a receiver reset restores the defaults.", "hint", wrap=True))
+        for name in RECEIVER_CONSTELLATIONS:
+            row = Gtk.Box(spacing=4, homogeneous=True)
+            row.append(label(name.title(), "mono"))
+            row.append(button("Enable", lambda n=name: receiver(["-e", n], f"Enable {n.title()} tracking.")))
+            row.append(button("Disable", lambda n=name: receiver(["-d", n], f"Disable {n.title()} tracking.")))
+            tools.append(row)
+        row = Gtk.Box(spacing=4, homogeneous=True)
+        row.append(label("Update rate", "mono"))
+        for text, milliseconds in RECEIVER_RATES:
+            row.append(button(text, lambda t=text, ms=milliseconds: receiver(
+                ["-p", f"RATE,{ms}"], f"Set the position update rate to {t}.")))
+        tools.append(row)
+        ui["tool_out"] = label("", "hint", wrap=True)
+        tools.append(ui["tool_out"])
+        stack.add_named(scrolled(tools), "TOOLS")
+
+        win.connect("close-request", lambda _w: close() or False)
+        refresh_waypoints()
+        tab_buttons["LIVE"].set_active(True)
+        win.present()
+        GLib.timeout_add(1000, lambda: refresh() or True)
+        GLib.timeout_add(3000, watch_theme)
+
+    # ----- waypoints -----
     def refresh_waypoints():
-        wp_list.delete(0, "end")
+        lst = ui["wp_list"]
+        child = lst.get_first_child()
+        while child is not None:
+            following = child.get_next_sibling()
+            lst.remove(child)
+            child = following
         for wp in waypoints:
             mark = "► " if nav["target"] is wp else "  "
-            wp_list.insert("end", f"{mark}{wp['name']}  {wp['lat']:.5f}, {wp['lon']:.5f}")
+            row_label = label(f"{mark}{wp['name']}  {wp['lat']:.5f}, {wp['lon']:.5f}", "wp-row")
+            lst.append(row_label)
+        if nav["selected"] in waypoints:
+            lst.select_row(lst.get_row_at_index(waypoints.index(nav["selected"])))
 
     def add_waypoint():
         tpv = nav["tpv"]
         if tpv.get("mode", 0) < 2 or "lat" not in tpv:
-            messagebox.showinfo("Waypoint", "No GPS fix yet.", parent=root)
+            message_dialog("Waypoint", "No GPS fix yet.")
             return
-        name = simpledialog.askstring("Waypoint", "Name:", initialvalue=f"WP{len(waypoints) + 1}",
-                                      parent=root)
-        if not name:
-            return
-        waypoints.append({"name": name.strip(), "lat": tpv["lat"], "lon": tpv["lon"],
-                          "alt": tpv.get("altHAE", tpv.get("alt"))})
-        save_waypoints(waypoints_file, waypoints)
-        refresh_waypoints()
 
-    def selected_waypoint():
-        picked = wp_list.curselection()
-        return waypoints[picked[0]] if picked else None
+        def done(name):
+            waypoints.append({"name": name, "lat": tpv["lat"], "lon": tpv["lon"],
+                              "alt": tpv.get("altHAE", tpv.get("alt"))})
+            save_waypoints(waypoints_file, waypoints)
+            refresh_waypoints()
+        ask_name(f"WP{len(waypoints) + 1}", done)
 
     def set_target():
-        nav["target"] = selected_waypoint()
+        nav["target"] = nav["selected"]
         refresh_waypoints()
 
     def delete_waypoint():
-        wp = selected_waypoint()
-        if wp is not None:
+        wp = nav["selected"]
+        if wp is not None and wp in waypoints:
             if nav["target"] is wp:
                 nav["target"] = None
             waypoints.remove(wp)
+            nav["selected"] = None
             save_waypoints(waypoints_file, waypoints)
             refresh_waypoints()
 
@@ -592,23 +876,12 @@ def run_app():
         nav["target"] = None
         refresh_waypoints()
 
-    for text, command in (("Add waypoint here", add_waypoint), ("Go to selected", set_target),
-                          ("Clear target", clear_target), ("Delete", delete_waypoint)):
-        tk.Button(wp_buttons, text=text, command=command, font=("DejaVu Sans", 9)).pack(side="left", padx=2)
-
-    # ----- TRACK tab -----
-    trackp = pages["TRACK"]
-    label(trackp, text="TRACK LOG", font=bold, anchor="w").pack(fill="x")
-    log_text = label(trackp, font=mono, anchor="w", justify="left", wraplength=430)
-    log_text.pack(fill="x", pady=4)
-    track_buttons = tk.Frame(trackp)
-    track_buttons.pack(fill="x")
-
+    # ----- track -----
     def toggle_log():
         if log["handle"] is not None:
             log["handle"].close()
             log["handle"] = log["writer"] = None
-            log_button.config(text="Start track log")
+            ui["log_button"].set_label("Start track log")
             return
         os.makedirs(DATA_DIR, exist_ok=True)
         log["path"] = os.path.join(DATA_DIR, time.strftime("track-%Y%m%d-%H%M%S.csv"))
@@ -617,12 +890,11 @@ def run_app():
         log["writer"].writerow(["time_utc", "lat", "lon", "alt_m", "speed_mps", "track_deg"])
         log["last"] = None
         track.clear()
-        log_button.config(text="Stop track log")
+        ui["log_button"].set_label("Stop track log")
 
     def export_gpx():
         if not track and not waypoints:
-            messagebox.showinfo("Export GPX", "Nothing to export yet. Start the track log first.",
-                                parent=root)
+            message_dialog("Export GPX", "Nothing to export yet. Start the track log first.")
             return
         os.makedirs(DATA_DIR, exist_ok=True)
         path = os.path.join(DATA_DIR, time.strftime("export-%Y%m%d-%H%M%S.gpx"))
@@ -635,202 +907,81 @@ def run_app():
         if shutil.which("xdg-open"):
             subprocess.Popen(["xdg-open", DATA_DIR])
 
-    log_button = tk.Button(track_buttons, text="Start track log", command=toggle_log)
-    log_button.pack(side="left", padx=2)
-    tk.Button(track_buttons, text="Export GPX", command=export_gpx).pack(side="left", padx=2)
-    tk.Button(track_buttons, text="Open folder", command=open_folder).pack(side="left", padx=2)
-    label(trackp, anchor="w", justify="left", font=("DejaVu Sans", 9), wraplength=430,
-          text=f"Logs are saved as CSV (one point per second while there is a fix) in {DATA_DIR}. "
-               "Export GPX writes this session's track plus your waypoints for use in "
-               "mapping apps.").pack(fill="x", pady=8)
-
-    # ----- TOOLS tab -----
-    tools = pages["TOOLS"]
-    label(tools, text="SUN (at your position)", font=bold, anchor="w").pack(fill="x")
-    sun_text = label(tools, font=mono, anchor="w", justify="left")
-    sun_text.pack(fill="x", pady=(2, 10))
-    label(tools, text="RECEIVER SETUP", font=bold, anchor="w").pack(fill="x")
-    label(tools, anchor="w", justify="left", font=("DejaVu Sans", 9), wraplength=430,
-          text="These write to the GPS receiver (asks first). Changes are not saved to its flash; "
-               "a receiver reset restores the defaults.").pack(fill="x")
-
+    # ----- receiver setup -----
     def receiver(args, description):
         if not shutil.which("ubxtool"):
-            messagebox.showerror("Receiver setup", "ubxtool is not installed (package gpsd-clients).",
-                                 parent=root)
+            message_dialog("Receiver setup", "ubxtool is not installed (package gpsd-clients).")
             return
-        if not messagebox.askyesno("Change receiver settings", f"{description}\n\nContinue?", parent=root):
-            return
-        tool_out.config(text="Working...")
 
-        def work():
-            try:
-                out = subprocess.run(["ubxtool", "-P", "15", *args], capture_output=True,
-                                     text=True, timeout=30).stdout
-                if "ACK-NAK" in out:
-                    message = "Receiver rejected the change."
-                elif "ACK-ACK" in out:
-                    message = "Receiver accepted the change."
-                else:
-                    message = "\n".join(out.strip().splitlines()[-4:]) or "No reply from receiver."
-            except (OSError, subprocess.SubprocessError) as error:
-                message = f"Failed: {error}"
-            nav["message"] = message
+        def go():
+            ui["tool_out"].set_label("Working...")
 
-        threading.Thread(target=work, daemon=True).start()
+            def work():
+                try:
+                    out = subprocess.run(["ubxtool", "-P", "15", *args], capture_output=True,
+                                         text=True, timeout=30).stdout
+                    if "ACK-NAK" in out:
+                        message = "Receiver rejected the change."
+                    elif "ACK-ACK" in out:
+                        message = "Receiver accepted the change."
+                    else:
+                        message = "\n".join(out.strip().splitlines()[-4:]) or "No reply from receiver."
+                except (OSError, subprocess.SubprocessError) as error:
+                    message = f"Failed: {error}"
+                nav["message"] = message
 
-    for name in RECEIVER_CONSTELLATIONS:
-        row = tk.Frame(tools)
-        row.pack(fill="x", pady=1)
-        label(row, text=name.title(), font=mono, width=9, anchor="w").pack(side="left")
-        tk.Button(row, text="Enable", command=lambda n=name: receiver(
-            ["-e", n], f"Enable {n.title()} tracking.")).pack(side="left", padx=2)
-        tk.Button(row, text="Disable", command=lambda n=name: receiver(
-            ["-d", n], f"Disable {n.title()} tracking.")).pack(side="left", padx=2)
-    rate_row = tk.Frame(tools)
-    rate_row.pack(fill="x", pady=(6, 1))
-    label(rate_row, text="Update rate", font=mono, width=11, anchor="w").pack(side="left")
-    for text, milliseconds in RECEIVER_RATES:
-        tk.Button(rate_row, text=text, command=lambda t=text, ms=milliseconds: receiver(
-            ["-p", f"RATE,{ms}"], f"Set the position update rate to {t}.")).pack(side="left", padx=2)
-    tool_out = label(tools, anchor="w", justify="left", font=("DejaVu Sans", 9), wraplength=430)
-    tool_out.pack(fill="x", pady=8)
+            threading.Thread(target=work, daemon=True).start()
+        message_dialog("Change receiver settings", f"{description}\n\nContinue?", go)
 
     # ----- theme -----
-    def restyle(widget):
-        for child in widget.winfo_children():
-            kind = child.winfo_class()
-            if kind == "Frame":
-                child.configure(bg=pal["bg"])
-            elif kind == "Label":
-                child.configure(bg=pal["bg"])
-                if child in plain_fg:
-                    child.configure(fg=pal["fg"])
-            elif kind == "Button" and child not in tab_buttons.values():
-                child.configure(bg=pal["btn"], fg=pal["fg"], activebackground=pal["bar"],
-                                activeforeground=pal["fg"], highlightbackground=pal["bg"])
-            elif kind == "Listbox":
-                child.configure(bg=pal["sky"], fg=pal["fg"])
-            restyle(child)
-
-    def apply_theme():
-        pal.update(DARK if theme["dark"] else LIGHT)
-        root.configure(bg=pal["bg"])
-        restyle(root)
-        for widget in (canvas, sig_canvas, jam_canvas, compass):
-            widget.configure(bg=pal["sky"])
-        jam_bar.configure(bg=pal["bar"])
-        body.configure(bg=pal["bg"], fg=pal["fg"])
-        show(current["page"])
-
     def watch_theme():
         dark = system_is_dark()
         if dark != theme["dark"]:
             theme["dark"] = dark
-            apply_theme()
-        root.after(3000, watch_theme)
+            pal.update(DARK if dark else LIGHT)
+            redraw_all()
+        return True
 
-    # ----- drawing -----
-    def draw_sky(satellites):
-        canvas.delete("all")
-        width, height = max(canvas.winfo_width(), 200), max(canvas.winfo_height(), 200)
-        cx, cy, radius = width / 2, height / 2, min(width, height) / 2 - 26
-        for elevation in (0, 30, 60):
-            r = (90 - elevation) / 90 * radius
-            canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=pal["ring"])
-            if elevation:
-                canvas.create_text(cx + 4, cy - r + 2, text=f"{elevation}°", anchor="nw", fill=pal["ringtext"])
-        canvas.create_line(cx - radius, cy, cx + radius, cy, fill=pal["cross"])
-        canvas.create_line(cx, cy - radius, cx, cy + radius, fill=pal["cross"])
-        for text, azimuth in (("N", 0), ("E", 90), ("S", 180), ("W", 270)):
-            x, y = sky_xy(azimuth, -4, radius)
-            canvas.create_text(cx + x, cy + y, text=text, font=bold, fill=pal["fg"])
-        for sat in satellites:
-            if "az" not in sat or "el" not in sat:
+    def redraw_all():
+        for widget in (ui["sky_area"], ui["jam_bar"], ui["compass"]):
+            widget.queue_draw()
+        queue_signal_areas()
+
+    def queue_signal_areas():
+        page = ui["stack"].get_child_by_name("SIGNALS")
+        child = page.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.DrawingArea):
+                child.queue_draw()
+            child = child.get_next_sibling()
+
+    def fix_label(mode):
+        return {0: "none", 1: "none", 2: "2D", 3: "3D"}.get(mode, "?")
+
+    def colored(text, color):
+        return f'<span foreground="{color}" weight="bold" size="large">{GLib.markup_escape_text(text)}</span>'
+
+    def rebuild_live(lines):
+        box = ui["live_box"]
+        child = box.get_first_child()
+        while child is not None:
+            following = child.get_next_sibling()
+            box.remove(child)
+            child = following
+        for name, value in lines:
+            if value is None:
+                heading = label(name, "section")
+                heading.set_margin_top(8)
+                box.append(heading)
                 continue
-            name, color = CONSTELLATIONS.get(sat.get("gnssid"), ("?", "#616161"))
-            x, y = sky_xy(sat["az"], sat["el"], radius)
-            r = 11
-            used = sat.get("used")
-            canvas.create_oval(cx + x - r, cy + y - r, cx + x + r, cy + y + r,
-                               fill=color if used else pal["hollow"], outline=color, width=2)
-            canvas.create_text(cx + x, cy + y, text=str(sat.get("svid", sat.get("PRN", ""))),
-                               fill="white" if used else color, font=("DejaVu Sans", 8, "bold"))
-            canvas.create_text(cx + x, cy + y + r + 7, text=f"{sat.get('ss', 0):.0f}",
-                               fill=pal["ss"], font=("DejaVu Sans", 7))
-
-    def draw_bars(satellites):
-        sig_canvas.delete("all")
-        width, height = max(sig_canvas.winfo_width(), 200), max(sig_canvas.winfo_height(), 100)
-        top, foot, left_pad = 8, 24, 26
-        plot = height - top - foot
-        for level in (20, 40):
-            y = top + plot * (1 - level / 55)
-            sig_canvas.create_line(left_pad, y, width, y, fill=pal["cross"])
-            sig_canvas.create_text(2, y, text=str(level), anchor="w", fill=pal["ringtext"], font=("DejaVu Sans", 8))
-        sats = sorted((s for s in satellites if s.get("ss") is not None),
-                      key=lambda s: (s.get("gnssid", 9), s.get("svid", 0)))
-        if not sats:
-            sig_canvas.create_text(width / 2, height / 2, text="no satellites", fill=pal["fg"])
-            return
-        slot = (width - left_pad - 4) / len(sats)
-        for index, sat in enumerate(sats):
-            color = CONSTELLATIONS.get(sat.get("gnssid"), ("?", "#616161"))[1]
-            x0 = left_pad + index * slot + slot * 0.12
-            x1 = left_pad + (index + 1) * slot - slot * 0.12
-            y0 = top + plot * (1 - min(sat["ss"], 55) / 55)
-            sig_canvas.create_rectangle(x0, y0, x1, top + plot, outline=color, width=2,
-                                        fill=color if sat.get("used") else "")
-            if slot >= 14:
-                sig_canvas.create_text((x0 + x1) / 2, top + plot + 10, text=str(sat.get("svid", "")),
-                                       fill=pal["fg"], font=("DejaVu Sans", 8))
-
-    def draw_jam_history(history):
-        jam_canvas.delete("all")
-        width, height = max(jam_canvas.winfo_width(), 200), max(jam_canvas.winfo_height(), 80)
-        left_pad, top, foot = 30, 6, 16
-        plot = height - top - foot
-
-        def y_of(value):
-            return top + plot * (1 - value / 255)
-        for level, color in ((40, AMBER), (100, "#c62828")):
-            jam_canvas.create_line(left_pad, y_of(level), width, y_of(level), fill=color, dash=(4, 3))
-            jam_canvas.create_text(2, y_of(level), text=str(level), anchor="w", fill=pal["ringtext"],
-                                   font=("DejaVu Sans", 8))
-        if len(history) < 2:
-            jam_canvas.create_text(width / 2, height / 2, text="collecting data...", fill=pal["fg"])
-            return
-        start, end = history[0][0], history[-1][0]
-        span = max(end - start, 1)
-        points = [(left_pad + (t - start) / span * (width - left_pad - 4), y_of(v), v) for t, v in history]
-        for (x0, y0, _), (x1, y1, v1) in zip(points, points[1:]):
-            jam_canvas.create_line(x0, y0, x1, y1, fill=jam_level(v1)[1], width=2)
-        jam_canvas.create_text(left_pad, height - 2, text=f"-{span / 60:.0f} min", anchor="sw",
-                               fill=pal["ringtext"], font=("DejaVu Sans", 8))
-        jam_canvas.create_text(width - 4, height - 2, text="now", anchor="se",
-                               fill=pal["ringtext"], font=("DejaVu Sans", 8))
-
-    def draw_compass(heading, bearing):
-        compass.delete("all")
-        cx = cy = 120
-        radius = 100
-        compass.create_oval(cx - radius, cy - radius, cx + radius, cy + radius, outline=pal["ring"], width=2)
-        for text, angle in (("N", 0), ("E", 90), ("S", 180), ("W", 270)):
-            x, y = sky_xy(angle, -6, radius + 1)
-            compass.create_text(cx + x, cy + y, text=text, font=bold, fill=pal["fg"])
-        for angle in range(0, 360, 30):
-            x0, y0 = sky_xy(angle, 0, radius)
-            x1, y1 = sky_xy(angle, 6, radius)
-            compass.create_line(cx + x0, cy + y0, cx + x1, cy + y1, fill=pal["ring"])
-        if bearing is not None:
-            x, y = sky_xy(bearing, 8, radius)
-            compass.create_line(cx, cy, cx + x, cy + y, fill="#1565c0", width=5, arrow="last",
-                                arrowshape=(14, 16, 6))
-        if heading is not None:
-            x, y = sky_xy(heading, 12, radius)
-            compass.create_line(cx, cy, cx + x, cy + y, fill=AMBER, width=3, arrow="last",
-                                arrowshape=(12, 14, 5))
-        compass.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill=pal["fg"], outline="")
+            box.append(label(f"{name}:", "row-title"))
+            value_button = Gtk.Button(has_frame=False)
+            value_button.add_css_class("value-button")
+            value_button.add_css_class("flat")
+            value_label = label(f"  {value}", "mono")
+            value_button.set_child(value_label)
+            value_button.connect("clicked", lambda _b, v=value: copy_text(v))
+            box.append(value_button)
 
     # ----- refresh loop -----
     def refresh():
@@ -840,22 +991,24 @@ def run_app():
             history = list(state.jam_history)
         nav["tpv"] = tpv
         mode = tpv.get("mode", 0)
+        ui["sky"], ui["history"] = sky, history
         if nav["message"]:
-            tool_out.config(text=nav["message"])
+            ui["tool_out"].set_label(nav["message"])
             nav["message"] = None
         jam_value = hw.get("jam")
+        ui["jam_value"] = jam_value
         alert = (jam_value is not None and jam_value >= 100) or hw.get("jam_state") == "critical"
         if alert and not nav["alert"]:
-            root.bell()
+            ui["win"].get_display().beep()
         nav["alert"] = alert
         if not connected:
-            status.config(text="gpsd not running", fg="#c62828")
+            ui["status"].set_markup(colored("gpsd not running", "#c62828"))
         elif device is None:
-            status.config(text="No GPS attached to gpsd", fg="#c62828")
+            ui["status"].set_markup(colored("No GPS attached to gpsd", "#c62828"))
         else:
             fix = {0: "No data", 1: "No fix", 2: "2D fix", 3: "3D fix"}.get(mode, "?")
-            status.config(text=("⚠ JAMMING ALERT  " if alert else "") + fix,
-                          fg="#c62828" if alert else "#2e7d32" if mode >= 2 else "#ef6c00")
+            ui["status"].set_markup(colored(("⚠ JAMMING ALERT  " if alert else "") + fix,
+                                            "#c62828" if alert else "#2e7d32" if mode >= 2 else "#ef6c00"))
 
         lines = []
         header = lambda name: lines.append((name, None))
@@ -882,49 +1035,37 @@ def run_app():
                          for name, value in lines).strip()
         if text != shown["text"]:
             shown["text"] = text
-            top_of_view = body.yview()[0]
-            body.config(state="normal")
-            body.delete("1.0", "end")
-            for index, (name, value) in enumerate(lines):
-                if value is None:
-                    body.insert("end", f" {name} \n", "section")
-                    continue
-                tag = f"value{index}"
-                body.insert("end", f"{name}:\n", "title")
-                body.insert("end", f"  {value}\n", tag)
-                body.tag_bind(tag, "<Button-1>", lambda event, v=value: copy_text(v))
-                body.tag_bind(tag, "<Enter>", lambda event: body.config(cursor="hand2"))
-                body.tag_bind(tag, "<Leave>", lambda event: body.config(cursor="arrow"))
-            body.config(state="disabled")
-            body.yview_moveto(top_of_view)
+            adjustment = ui["live_scroll"].get_vadjustment()
+            position = adjustment.get_value()
+            rebuild_live(lines)
+            GLib.idle_add(lambda: adjustment.set_value(position) and False)
 
         level, color = jam_level(jam_value)
-        jam_bar.delete("all")
-        if jam_value is not None:
-            jam_bar.create_rectangle(0, 0, jam_bar.winfo_width() * jam_value / 255, 26, fill=color, width=0)
         extra = [f"{jam_value}/255 - {level}" if jam_value is not None
                  else "waiting for receiver (needs ubxtool)"]
         if "jam_state" in hw:
             extra.append(f"Receiver jamming state: {hw['jam_state']}")
         if "antenna" in hw:
             extra.append(f"Antenna: {hw['antenna']}")
-        jam_text.config(text="\n".join(extra), fg=color if jam_value is not None else pal["fg"])
-        draw_sky(sky)
+        ui["jam_text"].set_markup(
+            f'<span foreground="{color}">{GLib.markup_escape_text(chr(10).join(extra))}</span>'
+            if jam_value is not None else GLib.markup_escape_text("\n".join(extra)))
+        ui["jam_bar"].queue_draw()
+        ui["sky_area"].queue_draw()
 
         has_fix = mode >= 2 and "lat" in tpv and "lon" in tpv
-        page = current["page"]
+        page = ui["stack"].get_visible_child_name()
         if page == "SIGNALS":
             for key, value in (("HDOP", dops.get("hdop")), ("VDOP", dops.get("vdop")),
                                ("PDOP", dops.get("pdop"))):
-                quality, tint = dop_quality(value)
-                dash_values[key].config(text="-" if value is None else f"{value}", fg=tint)
-            dash_values["FIX"].config(text=fix_label(mode), fg="#2e7d32" if mode >= 2 else "#c62828")
+                ui["dash"][key].set_markup(colored("-" if value is None else f"{value}",
+                                                   dop_quality(value)[1]))
+            ui["dash"]["FIX"].set_markup(colored(fix_label(mode), "#2e7d32" if mode >= 2 else "#c62828"))
             accuracy = tpv.get("eph")
-            dash_values["ACCURACY"].config(
-                text="-" if accuracy is None else f"±{accuracy:.1f}m",
-                fg=dop_quality(None if accuracy is None else accuracy / 2.5)[1])
-            draw_bars(sky)
-            draw_jam_history(history)
+            ui["dash"]["ACCURACY"].set_markup(colored(
+                "-" if accuracy is None else f"±{accuracy:.1f}m",
+                dop_quality(None if accuracy is None else accuracy / 2.5)[1]))
+            queue_signal_areas()
 
         heading = tpv.get("track") if tpv.get("speed", 0) >= 0.5 else None
         bearing, lines_nav = None, []
@@ -941,9 +1082,10 @@ def run_app():
                              + (f"  turn {turn_hint(heading, bearing)}" if heading is not None else ""))
         elif target is not None:
             lines_nav.append(f"Target:  {target['name']} (waiting for fix)")
+        ui["heading"], ui["bearing"] = heading, bearing
         if page == "NAVIGATE":
-            nav_text.config(text="\n".join(lines_nav))
-            draw_compass(heading, bearing)
+            ui["nav_text"].set_label("\n".join(lines_nav))
+            ui["compass"].queue_draw()
 
         if log["handle"] is not None and has_fix and tpv.get("time") and tpv["time"] != log["last"]:
             log["last"] = tpv["time"]
@@ -962,35 +1104,28 @@ def run_app():
                 lines_log.append(f"File: {os.path.basename(log['path'])}")
             if log["export"]:
                 lines_log.append(f"Exported: {os.path.basename(log['export'])}")
-            log_text.config(text="\n".join(lines_log))
+            ui["log_text"].set_label("\n".join(lines_log))
         if page == "TOOLS":
             sun = sun_times(tpv["lat"], tpv["lon"], datetime.date.today()) if has_fix else None
             if not has_fix:
-                sun_text.config(text="waiting for a fix")
+                ui["sun_text"].set_label("waiting for a fix")
             elif sun is None:
-                sun_text.config(text="no sunrise/sunset today (polar day or night)")
+                ui["sun_text"].set_label("no sunrise/sunset today (polar day or night)")
             else:
                 rise, sunset = sun[0].astimezone(), sun[1].astimezone()
                 length = sun[1] - sun[0]
-                sun_text.config(text=f"Sunrise: {rise:%H:%M}\nSunset:  {sunset:%H:%M}\n"
-                                     f"Daylight: {length.seconds // 3600}h {length.seconds % 3600 // 60:02d}m")
-        root.after(1000, refresh)
-
-    def fix_label(mode):
-        return {0: "none", 1: "none", 2: "2D", 3: "3D"}.get(mode, "?")
+                ui["sun_text"].set_label(f"Sunrise: {rise:%H:%M}\nSunset:  {sunset:%H:%M}\n"
+                                         f"Daylight: {length.seconds // 3600}h {length.seconds % 3600 // 60:02d}m")
 
     def close():
         stop.set()
         if log["handle"] is not None:
             log["handle"].close()
-        root.destroy()
+            log["handle"] = None
 
-    root.protocol("WM_DELETE_WINDOW", close)
-    refresh_waypoints()
-    apply_theme()
-    refresh()
-    watch_theme()
-    root.mainloop()
+    app.connect("activate", activate)
+    app.run(None)
+    close()
 
 
 if __name__ == "__main__":

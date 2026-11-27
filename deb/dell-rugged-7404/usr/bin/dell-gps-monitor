@@ -357,6 +357,197 @@ DARK = {"bg": "#2b2b2b", "fg": "#eeeeec", "sky": "#1e1e1e", "ring": "#5a5a5a", "
         "cross": "#3a3a3a", "bar": "#3d3d3d", "ss": "#b0b0b0", "hollow": "#1e1e1e", "btn": "#3d3d3d"}
 
 
+# ----- offline county areas and local routing -----
+MAPS_DIR = os.path.join(DATA_DIR, "maps")
+TIGER_URL = ("https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/State_County/MapServer/1/query?")
+GEOFABRIK_URL = "https://download.geofabrik.de/north-america/us/{}-latest.osm.pbf"
+ROUTINO_SHARE = "/usr/share/routino"
+STATES = {
+    "01": "Alabama", "02": "Alaska", "04": "Arizona", "05": "Arkansas", "06": "California",
+    "08": "Colorado", "09": "Connecticut", "10": "Delaware", "11": "District of Columbia",
+    "12": "Florida", "13": "Georgia", "15": "Hawaii", "16": "Idaho", "17": "Illinois",
+    "18": "Indiana", "19": "Iowa", "20": "Kansas", "21": "Kentucky", "22": "Louisiana",
+    "23": "Maine", "24": "Maryland", "25": "Massachusetts", "26": "Michigan", "27": "Minnesota",
+    "28": "Mississippi", "29": "Missouri", "30": "Montana", "31": "Nebraska", "32": "Nevada",
+    "33": "New Hampshire", "34": "New Jersey", "35": "New Mexico", "36": "New York",
+    "37": "North Carolina", "38": "North Dakota", "39": "Ohio", "40": "Oklahoma", "41": "Oregon",
+    "42": "Pennsylvania", "44": "Rhode Island", "45": "South Carolina", "46": "South Dakota",
+    "47": "Tennessee", "48": "Texas", "49": "Utah", "50": "Vermont", "51": "Virginia",
+    "53": "Washington", "54": "West Virginia", "55": "Wisconsin", "56": "Wyoming",
+}
+
+
+class RouteError(Exception):
+    pass
+
+
+def geofabrik_slug(state_name):
+    return state_name.lower().replace(" ", "-")
+
+
+def http_json(params):
+    import urllib.parse
+    import urllib.request
+    url = TIGER_URL + urllib.parse.urlencode(params)
+    with urllib.request.urlopen(url, timeout=60) as response:
+        return json.load(response)
+
+
+def list_counties(state_fips):
+    data = http_json({"where": f"STATE='{state_fips}'", "outFields": "NAME,GEOID",
+                      "returnGeometry": "false", "f": "json", "orderByFields": "NAME"})
+    return [(f["attributes"]["NAME"], f["attributes"]["GEOID"]) for f in data.get("features", [])]
+
+
+def county_polygon(geoid):
+    data = http_json({"where": f"GEOID='{geoid}'", "outFields": "NAME", "returnGeometry": "true",
+                      "outSR": "4326", "f": "geojson"})
+    if not data.get("features"):
+        raise RouteError("County boundary not found.")
+    return data
+
+
+def download_file(url, dest, progress=None):
+    import urllib.request
+    with urllib.request.urlopen(url, timeout=60) as response, open(dest, "wb") as handle:
+        total = int(response.headers.get("Content-Length") or 0)
+        done = 0
+        while True:
+            chunk = response.read(1 << 20)
+            if not chunk:
+                break
+            handle.write(chunk)
+            done += len(chunk)
+            if progress and total:
+                progress(f"Downloading state data… {done // 1048576} of {total // 1048576} MB")
+
+
+def tools_missing():
+    return [name for name in ("osmium", "planetsplitter", "routino-router") if not shutil.which(name)]
+
+
+def downloaded_areas():
+    areas = []
+    base = os.path.join(MAPS_DIR, "areas")
+    for geoid in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        try:
+            with open(os.path.join(base, geoid, "meta.json")) as handle:
+                areas.append(dict(json.load(handle), geoid=geoid))
+        except (OSError, ValueError):
+            continue
+    return areas
+
+
+def run_tool(args, **kwargs):
+    result = subprocess.run(args, capture_output=True, text=True, **kwargs)
+    if result.returncode != 0:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        raise RouteError(f"{os.path.basename(args[0])} failed: {lines[-1] if lines else result.returncode}")
+    return result
+
+
+def build_routing_db(progress=None):
+    folder = os.path.join(MAPS_DIR, "routing")
+    shutil.rmtree(folder, ignore_errors=True)
+    files = [os.path.join(MAPS_DIR, "areas", a["geoid"], "area.osm.pbf") for a in downloaded_areas()]
+    if not files:
+        return
+    os.makedirs(folder)
+    if progress:
+        progress("Building the routing database (can take several minutes)…")
+    run_tool(["planetsplitter", f"--dir={folder}", "--prefix=routing",
+              f"--tagging={ROUTINO_SHARE}/tagging.xml"] + files)
+
+
+def download_county(state_fips, geoid, name, progress=None):
+    missing = tools_missing()
+    if missing:
+        raise RouteError("Missing: " + ", ".join(missing) + ". Install with: sudo apt install routino osmium-tool")
+    say = progress or (lambda _text: None)
+    area = os.path.join(MAPS_DIR, "areas", geoid)
+    cache = os.path.join(MAPS_DIR, "cache")
+    os.makedirs(area, exist_ok=True)
+    os.makedirs(cache, exist_ok=True)
+    state_file = os.path.join(cache, f"state-{state_fips}.osm.pbf")
+    try:
+        say("Getting the county boundary…")
+        polygon = os.path.join(cache, f"{geoid}.geojson")
+        with open(polygon, "w") as handle:
+            json.dump(county_polygon(geoid), handle)
+        download_file(GEOFABRIK_URL.format(geofabrik_slug(STATES[state_fips])), state_file, say)
+        say("Cutting out the county…")
+        run_tool(["osmium", "extract", "-p", polygon, state_file, "-o",
+                  os.path.join(area, "area.osm.pbf"), "--overwrite"])
+        with open(os.path.join(area, "meta.json"), "w") as handle:
+            json.dump({"name": name, "state": STATES[state_fips],
+                       "downloaded": datetime.date.today().isoformat()}, handle)
+        build_routing_db(say)
+    finally:
+        shutil.rmtree(cache, ignore_errors=True)
+    say(f"{name}, {STATES[state_fips]} is ready for offline routing.")
+
+
+def remove_area(geoid, progress=None):
+    shutil.rmtree(os.path.join(MAPS_DIR, "areas", geoid), ignore_errors=True)
+    build_routing_db(progress)
+
+
+def parse_route_text(text):
+    """Parse routino's --output-text-all table into a list of point dicts."""
+    points = []
+    for line in text.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        cols = [c.strip() for c in line.split("\t")]
+        try:
+            point = {"lat": float(cols[0]), "lon": float(cols[1]), "type": cols[3]}
+            point["total_km"] = float(cols[6])
+            point["total_min"] = float(cols[7])
+            point["segment_km"] = float(cols[4])
+        except (IndexError, ValueError):
+            continue
+        point["road"] = cols[10] if len(cols) > 10 and cols[10] not in ("", "(null)") else "unnamed road"
+        points.append(point)
+    return points
+
+
+def route_steps(points):
+    """Collapse the route into 'road, distance' legs."""
+    steps = []
+    for point in points[1:]:
+        if steps and steps[-1]["road"] == point["road"]:
+            steps[-1]["km"] += point["segment_km"]
+        else:
+            steps.append({"road": point["road"], "km": point["segment_km"]})
+    return steps
+
+
+def format_duration(minutes):
+    minutes = int(round(minutes))
+    return f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min"
+
+
+def compute_route(lat1, lon1, lat2, lon2):
+    folder = os.path.join(MAPS_DIR, "routing")
+    if not os.path.exists(os.path.join(folder, "routing-nodes.mem")):
+        raise RouteError("No offline area downloaded yet. Use Download County Area first.")
+    if not shutil.which("routino-router"):
+        raise RouteError("routino is not installed (sudo apt install routino).")
+    import tempfile
+    with tempfile.TemporaryDirectory() as work:
+        run_tool(["routino-router", f"--dir={folder}", "--prefix=routing",
+                  f"--profiles={ROUTINO_SHARE}/profiles.xml",
+                  f"--translations={ROUTINO_SHARE}/translations.xml", "--transport=motorcar",
+                  "--quickest", f"--lat1={lat1}", f"--lon1={lon1}", f"--lat2={lat2}", f"--lon2={lon2}",
+                  "--output-text-all", "--quiet"], cwd=work)
+        with open(os.path.join(work, "quickest-all.txt")) as handle:
+            points = parse_route_text(handle.read())
+    if len(points) < 2:
+        raise RouteError("No route found.")
+    return {"points": points, "km": points[-1]["total_km"], "minutes": points[-1]["total_min"],
+            "steps": route_steps(points)}
+
+
 def system_is_dark():
     """True when the Ubuntu/GNOME appearance setting is dark."""
     def get(schema, key):
@@ -826,6 +1017,170 @@ def run_app():
                     wp_layer.add_marker(pin)
             ui["draw_map_waypoints"] = draw_map_waypoints
 
+            route_layer = Shumate.PathLayer.new(viewport)
+            route_layer.set_stroke_width(6)
+            route_layer.set_stroke_color(Gdk.RGBA(red=0.1, green=0.5, blue=1.0, alpha=0.9))
+            simple.add_overlay_layer(route_layer)
+            nav["route"] = None
+
+            def clear_route():
+                for node in list(route_layer.get_nodes()):
+                    route_layer.remove_node(node)
+                nav["route"] = None
+                ui["route_button"].set_label("Route to target")
+
+            def show_directions(route):
+                dialog = Gtk.Window(title="Directions", modal=True, transient_for=ui["win"],
+                                    default_width=520, default_height=480)
+                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12,
+                              margin_bottom=12, margin_start=12, margin_end=12)
+                box.append(label(f"{route['km']:.1f} km · {format_duration(route['minutes'])} by car",
+                                 "status"))
+                steps = "\n".join(f"{n}. {step['road']} – {step['km']:.1f} km"
+                                   for n, step in enumerate(route["steps"], 1))
+                box.append(scrolled(label(steps, "mono", wrap=True)))
+                box.append(button("Close", dialog.destroy))
+                dialog.set_child(box)
+                dialog.present()
+
+            def route_to_target():
+                if nav["route"] is not None:
+                    clear_route()
+                    return
+                tpv, wp = nav["tpv"], nav["target"]
+                if wp is None:
+                    message_dialog("Route", "Pick a target waypoint on the NAVIGATE tab first "
+                                            "(select it and tap Set target).")
+                    return
+                if tpv.get("mode", 0) < 2 or "lat" not in tpv:
+                    message_dialog("Route", "No GPS fix yet.")
+                    return
+                ui["route_note"].set_label("Routing…")
+
+                def work():
+                    try:
+                        result = compute_route(tpv["lat"], tpv["lon"], wp["lat"], wp["lon"])
+                    except Exception as error:
+                        GLib.idle_add(finish, None, str(error))
+                        return
+                    GLib.idle_add(finish, result, "")
+
+                def finish(result, error):
+                    ui["route_note"].set_label("")
+                    if result is None:
+                        message_dialog("Route", error)
+                        return False
+                    nav["route"] = result
+                    for point in result["points"]:
+                        route_layer.add_node(Shumate.Coordinate.new_full(point["lat"], point["lon"]))
+                    ui["route_button"].set_label("Clear route")
+                    ui["route_note"].set_label(f"{result['km']:.1f} km · {format_duration(result['minutes'])}")
+                    show_directions(result)
+                    return False
+                threading.Thread(target=work, daemon=True).start()
+
+            def area_dialog():
+                dialog = Gtk.Window(title="Download County Area", modal=True, transient_for=ui["win"],
+                                    default_width=520)
+                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12,
+                              margin_bottom=12, margin_start=12, margin_end=12)
+                box.append(label("Download a county's roads for offline routing.", "bold"))
+                box.append(label("Gets the state's OpenStreetMap data (from tens to a few hundred MB), "
+                                 "cuts out the county and builds a local routing database. "
+                                 "Needs internet only for this step.", "hint", wrap=True))
+                fips = sorted(STATES, key=lambda k: STATES[k])
+                state_pick = Gtk.DropDown.new_from_strings([STATES[k] for k in fips])
+                county_pick = Gtk.DropDown.new_from_strings(["Loading…"])
+                box.append(state_pick)
+                box.append(county_pick)
+                status = label("", "hint", wrap=True)
+                counties = []
+                busy = {"on": False}
+                go = button("Download", lambda: start_download())
+                box.append(go)
+                box.append(status)
+                box.append(label("DOWNLOADED AREAS", "bold"))
+                listing = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                box.append(listing)
+                box.append(button("Close", dialog.destroy))
+
+                def say(text):
+                    GLib.idle_add(lambda: status.set_label(text) or False)
+
+                def refresh_listing():
+                    child = listing.get_first_child()
+                    while child is not None:
+                        following = child.get_next_sibling()
+                        listing.remove(child)
+                        child = following
+                    found = downloaded_areas()
+                    if not found:
+                        listing.append(label("None yet.", "hint"))
+                    for area in found:
+                        row = Gtk.Box(spacing=8)
+                        row.append(label(f"{area['name']}, {area['state']}  ({area['downloaded']})",
+                                         "mono", xalign=0.0))
+                        row.get_first_child().set_hexpand(True)
+                        row.append(button("Delete", lambda g=area["geoid"]: delete(g)))
+                        listing.append(row)
+
+                def delete(geoid):
+                    if busy["on"]:
+                        return
+                    run_background(lambda: remove_area(geoid, say), "Area removed.")
+
+                def run_background(job, done_text):
+                    busy["on"] = True
+                    go.set_sensitive(False)
+
+                    def work():
+                        try:
+                            job()
+                            say(done_text if done_text else "Done.")
+                        except Exception as error:
+                            say(f"Error: {error}")
+                        GLib.idle_add(finished)
+
+                    def finished():
+                        busy["on"] = False
+                        go.set_sensitive(True)
+                        refresh_listing()
+                        return False
+                    threading.Thread(target=work, daemon=True).start()
+
+                def start_download():
+                    index = county_pick.get_selected()
+                    if busy["on"] or index >= len(counties) or index < 0:
+                        return
+                    name, geoid = counties[index]
+                    state_fips = fips[state_pick.get_selected()]
+                    run_background(lambda: download_county(state_fips, geoid, name, say), "")
+
+                def load_counties(*_args):
+                    state_fips = fips[state_pick.get_selected()]
+                    county_pick.set_model(Gtk.StringList.new(["Loading…"]))
+                    counties.clear()
+
+                    def work():
+                        try:
+                            found = list_counties(state_fips)
+                        except Exception as error:
+                            say(f"Could not load counties (internet needed): {error}")
+                            return
+
+                        def apply():
+                            if fips[state_pick.get_selected()] == state_fips:
+                                counties[:] = found
+                                county_pick.set_model(Gtk.StringList.new([n for n, _g in found]))
+                            return False
+                        GLib.idle_add(apply)
+                    threading.Thread(target=work, daemon=True).start()
+                state_pick.connect("notify::selected", load_counties)
+                dialog.set_child(box)
+                refresh_listing()
+                load_counties()
+                dialog.present()
+
             def waypoint_at(x, y):
                 lat, lon = viewport.widget_coords_to_location(simple, x, y)
                 add_waypoint(lat, lon)
@@ -834,6 +1189,7 @@ def run_app():
                 ui["target"].set_visible(on)
                 ui["place_row"].set_visible(on)
                 ui["buttons_row"].set_visible(not on)
+                ui["tools_row"].set_visible(not on)
 
             def confirm_waypoint():
                 placing(False)
@@ -875,6 +1231,14 @@ def run_app():
             buttons.append(ui["full_button"])
             ui["buttons_row"] = buttons
             mapp.append(buttons)
+            tools_row = Gtk.Box(spacing=4, homogeneous=True)
+            tools_row.append(button("Download County Area", area_dialog))
+            ui["route_button"] = button("Route to target", route_to_target)
+            tools_row.append(ui["route_button"])
+            ui["route_note"] = label("", "bold", xalign=0.5)
+            tools_row.append(ui["route_note"])
+            ui["tools_row"] = tools_row
+            mapp.append(tools_row)
             place_row = Gtk.Box(spacing=4, homogeneous=True, visible=False)
             place_row.append(button("Confirm waypoint", confirm_waypoint))
             place_row.append(button("Cancel", lambda: placing(False)))

@@ -409,6 +409,23 @@ class CellTowerTests(unittest.TestCase):
         self.assertEqual(gps.signal_color(None), "#d32f2f")
         self.assertEqual([gps.signal_color(q) for q in (10, 50, 90)], ["#ef8f00", "#fbc02d", "#2e7d32"])
 
+    def test_area_download_filters_to_downloaded_counties(self):
+        import gzip, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            data = ("LTE,310,260,1,1,0,-109.5,40.4,1,1,1,0,0,0\nLTE,310,260,1,2,0,-90.0,30.0,1,1,1,0,0,0\n")
+
+            def fake_download(url, dest, progress=None):
+                self.assertIn("downloads.php?token=KEY&type=mcc&file=", url)
+                with gzip.open(dest, "wt") as handle:
+                    handle.write(data)
+            with patch.object(gps, "CELLS_DIR", tmp), patch.object(gps, "CELL_DB", os.path.join(tmp, "c.db")), \
+                    patch.object(gps, "CELL_TOKEN", os.path.join(tmp, "token")), \
+                    patch.object(gps, "download_file", fake_download), \
+                    patch.object(gps, "downloaded_county_bboxes", lambda: {"x": (40, -110, 41, -109)}):
+                self.assertEqual(gps.download_cells_for_areas("KEY", mccs=(310,)), 1)
+                self.assertEqual(gps.cell_count(), 1)
+                self.assertEqual(gps.load_cell_token(), "KEY")
+
     def test_mmcli_keyvalue(self):
         self.assertEqual(gps.parse_mmcli_keyvalue("modem.generic.state : failed\nbad line\n")["modem.generic.state"],
                          "failed")

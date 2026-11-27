@@ -993,6 +993,10 @@ def run_app():
                 simple.add_css_class("dark-map")
             ui["map_widget"] = simple
             viewport = simple.get_viewport()
+            # Touch only pans; zoom comes from the +/- buttons or keys.
+            for gesture in list(simple.get_map().observe_controllers()):
+                if isinstance(gesture, (Gtk.GestureZoom, Gtk.GestureRotate, Gtk.GestureClick)):
+                    simple.get_map().remove_controller(gesture)
             viewport.set_zoom_level(3)
             layer = Shumate.MarkerLayer.new(viewport)
             marker = Shumate.Marker()
@@ -1214,7 +1218,8 @@ def run_app():
                 if "lat" in tpv and "lon" in tpv:
                     simple.get_map().go_to_full(tpv["lat"], tpv["lon"], max(viewport.get_zoom_level(), 14))
             drag = Gtk.GestureDrag()
-            drag.connect("drag-begin", lambda *_a: ui["map"].update(follow=False))
+            drag.connect("drag-begin", lambda *_a: (ui["map"].update(follow=False),
+                                                    simple.get_map().grab_focus()))
             simple.add_controller(drag)
             overlay = Gtk.Overlay(vexpand=True, hexpand=True)
             overlay.set_child(simple)
@@ -1245,7 +1250,7 @@ def run_app():
             ui["place_row"] = place_row
             mapp.append(place_row)
             mapp.append(label("OpenStreetMap, darkened in dark mode (needs internet; viewed tiles are cached). "
-                              "Pinch or +/- to zoom, drag to pan. Tap Add waypoint, drag the map so the amber target is where you want it, then Confirm. Press and hold also adds one.",
+                              "Drag to pan; zoom with the +/- buttons or the + and - keys. Tap Add waypoint, drag the map so the amber target is where you want it, then Confirm. Press and hold also adds one.",
                               "hint", wrap=True))
         except (ImportError, ValueError):
             mapp.append(label("The map needs the package gir1.2-shumate-1.0:\n"

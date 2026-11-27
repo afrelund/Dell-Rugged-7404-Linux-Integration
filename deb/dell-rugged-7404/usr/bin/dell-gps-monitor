@@ -275,7 +275,7 @@ def run_app():
 
     root = tk.Tk(className="dell-gps-monitor")
     root.title("Dell Rugged GPS Monitor")
-    root.geometry("1060x780")
+    root.geometry("1100x720")
     theme = {"dark": system_is_dark()}
     pal = dict(DARK if theme["dark"] else LIGHT)
     mono = tkfont.Font(family="DejaVu Sans Mono", size=11)
@@ -298,22 +298,29 @@ def run_app():
     right.pack(side="right", fill="both", padx=8, pady=8)
     status = tk.Label(right, font=big, anchor="w")
     status.pack(fill="x")
-    body = tk.Text(right, font=mono, width=46, height=29, relief="flat", wrap="none",
+    body = tk.Text(right, font=mono, width=46, height=22, relief="flat", wrap="none",
                    bg=root.cget("bg"), highlightthickness=0, cursor="arrow")
     body.tag_configure("title", font=bold)
-    body.pack(fill="x", pady=(6, 0))
-    jam_title = tk.Label(right, text="Jamming indicator", font=bold, anchor="w")
+    body.tag_configure("section", font=bold, background="#f2b01e", foreground="#1a1200",
+                       spacing1=10, spacing3=4)
+    bottom = tk.Frame(right)
+    bottom.pack(side="bottom", fill="x")
+    scroll = tk.Scrollbar(right, command=body.yview)
+    body.configure(yscrollcommand=scroll.set)
+    scroll.pack(side="right", fill="y", pady=(6, 0))
+    body.pack(fill="both", expand=True, pady=(6, 0))
+    jam_title = tk.Label(bottom, text="Jamming indicator", font=bold, anchor="w")
     jam_title.pack(fill="x", pady=(10, 0))
-    jam_bar = tk.Canvas(right, width=420, height=29, bg="#eeeeee", highlightthickness=0)
+    jam_bar = tk.Canvas(bottom, width=420, height=26, bg="#eeeeee", highlightthickness=0)
     jam_bar.pack(fill="x")
-    jam_text = tk.Label(right, font=mono, anchor="w", justify="left")
+    jam_text = tk.Label(bottom, font=mono, anchor="w", justify="left")
     jam_text.pack(fill="x")
     shown = {"text": ""}
 
     def apply_theme():
         pal.update(DARK if theme["dark"] else LIGHT)
         root.configure(bg=pal["bg"])
-        for frame in (left, right, legend):
+        for frame in (left, right, legend, bottom):
             frame.configure(bg=pal["bg"])
         for widget in (status, jam_title, jam_text, hint):
             widget.configure(bg=pal["bg"])
@@ -338,7 +345,7 @@ def run_app():
         root.clipboard_clear()
         root.clipboard_append(shown["text"])
 
-    copy_button = tk.Button(right, text="Copy coordinates and time", command=copy)
+    copy_button = tk.Button(bottom, text="Copy coordinates and time", command=copy)
     copy_button.pack(anchor="w", pady=8)
 
     def draw_sky(satellites):
@@ -382,9 +389,13 @@ def run_app():
             status.config(text={0: "No data", 1: "No fix", 2: "2D fix", 3: "3D fix"}.get(mode, "?"),
                           fg="#2e7d32" if mode >= 2 else "#ef6c00")
         lines = []
+        header = lambda name: lines.append((name, None))
         if mode >= 2 and "lat" in tpv and "lon" in tpv:
+            header("COORDINATES")
             for label, value in coordinate_lines(tpv["lat"], tpv["lon"], tpv.get("altHAE", tpv.get("alt"))):
                 lines.append((label, value))
+            if "eph" in tpv or "speed" in tpv:
+                header("MOTION / ACCURACY")
             if "eph" in tpv:
                 lines.append(("Accuracy (est.)", f"±{tpv['eph']:.1f} m horiz"
                               + (f", ±{tpv['epv']:.1f} m vert" if "epv" in tpv else "")))
@@ -392,18 +403,24 @@ def run_app():
                 lines.append(("Speed / track", f"{tpv['speed'] * 3.6:.1f} km/h"
                               + (f", {tpv['track']:.0f}°" if "track" in tpv else "")))
         if "time" in tpv:
+            header("TIME")
             lines.extend(time_lines(parse_gps_utc(tpv["time"])))
         used = sum(1 for s in sky if s.get("used"))
+        header("SATELLITES")
         lines.append(("Satellites", f"{used} used / {len(sky)} seen"
                       + (f"   HDOP {dops['hdop']}" if "hdop" in dops else "")))
-        text = "\n".join(f"{label}:\n  {value}" for label, value in lines)
+        text = "\n".join(f"\n== {label} ==" if value is None else f"{label}:\n  {value}"
+                         for label, value in lines).strip()
         if text != shown["text"]:
             shown["text"] = text
             body.config(state="normal")
             body.delete("1.0", "end")
             for label, value in lines:
-                body.insert("end", f"{label}:\n", "title")
-                body.insert("end", f"  {value}\n")
+                if value is None:
+                    body.insert("end", f" {label} \n", "section")
+                else:
+                    body.insert("end", f"{label}:\n", "title")
+                    body.insert("end", f"  {value}\n")
             body.config(state="disabled")
         level, color = jam_level(hw.get("jam"))
         jam_bar.delete("all")

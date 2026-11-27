@@ -4,10 +4,14 @@
   dell-rugged-7404-status            show what is installed / working
   dell-rugged-7404-status --install  install missing packages, showing progress
   dell-rugged-7404-status --watch    refresh the status every 2 seconds
+  dell-rugged-7404-status --json     machine-readable component status (used by the Setup window)
+  dell-rugged-7404-status --apply ID install one component: touchscreen, speaker, gps or graphics
 """
 import argparse
+import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -19,7 +23,6 @@ PACKAGES = {
     "gpsd": "GPS daemon for the u-blox receiver",
     "gpsd-clients": "GPS tools (cgps, gpspipe, ubxtool)",
     "pciutils": "GPU detection (lspci)",
-    "zenity": "setup window",
     "python3-tk": "GPS monitor window",
 }
 UBLOX = "1546"
@@ -59,6 +62,105 @@ def ublox_port():
                 return f"/dev/{tty.name}", read(device / "product") or "u-blox receiver"
             return None, read(device / "product") or "u-blox receiver"
     return None, None
+
+
+# ---------- components (push-to-install) ----------
+COMPONENTS = (
+    ("touchscreen", "Touchscreen repair", "Keeps the eGalax touchscreen working (checks every few minutes)."),
+    ("speaker", "Speaker fix", "Unmutes the HDA Intel PCH Headphone/Headset outputs that drive the speaker."),
+    ("gps", "GPS support", "Installs gpsd and the GPS tools and attaches the u-blox receiver."),
+    ("graphics", "Graphics driver", "Detects the GPUs and installs a driver only if Ubuntu recommends one."),
+)
+
+
+def component_touchscreen():
+    unit = "egalax-touchscreen-check.timer"
+    enabled, active = run("systemctl", "is-enabled", unit)[1], run("systemctl", "is-active", unit)[1]
+    if enabled == "enabled" and active == "active":
+        return "installed", "repair timer enabled and running"
+    return "missing", f"repair timer is {active or 'not set up'}"
+
+
+def component_speaker():
+    unit = "dell-speaker-check.service"
+    enabled, active = (run("systemctl", "--user", "is-enabled", unit)[1],
+                       run("systemctl", "--user", "is-active", unit)[1])
+    if enabled == "enabled" and active == "active":
+        detail = run("dell-speaker-check", "--status")[1].splitlines()
+        return "installed", detail[0] if detail else "speaker helper running"
+    return "missing", f"speaker helper is {active or 'not set up'}"
+
+
+def component_gps():
+    if not (installed("gpsd") and installed("gpsd-clients")):
+        return "missing", "gpsd and gpsd-clients are not installed"
+    port, product = ublox_port()
+    if product is None:
+        return "installed", "gpsd ready; no u-blox receiver plugged in"
+    if port is None:
+        return "partial", f"{product} found but it has no serial port yet"
+    out = run("gpspipe", "-w", "-n", "6", timeout=8)[1] if shutil.which("gpspipe") else ""
+    if port in out:
+        return "installed", f"{product} attached to gpsd on {port}"
+    return "partial", f"{product} on {port} is not attached to gpsd"
+
+
+def component_graphics():
+    out = run("dell-gpu-check")[1] if shutil.which("dell-gpu-check") else ""
+    if "Ubuntu recommends" in out:
+        return "missing", next(l.strip() for l in out.splitlines() if "Ubuntu recommends" in l)
+    drivers = ", ".join(dict.fromkeys(re.findall(r"driver=(\w+)", out))) or "unknown"
+    note = " (no proprietary driver needed)" if "nouveau is correct" in out else ""
+    return "installed", f"drivers in use: {drivers}{note}"
+
+
+def components():
+    checks = {"touchscreen": component_touchscreen, "speaker": component_speaker,
+              "gps": component_gps, "graphics": component_graphics}
+    result = []
+    for key, title, description in COMPONENTS:
+        state, detail = checks[key]()
+        result.append({"id": key, "title": title, "description": description,
+                       "state": state, "detail": detail})
+    return result
+
+
+def apply(key):
+    """Install one component. 'speaker' runs as the user; the others need root (pkexec)."""
+    if key == "speaker":
+        code = subprocess.run(["systemctl", "--user", "enable", "--now", "dell-speaker-check.service"]).returncode
+        if shutil.which("dell-speaker-check"):
+            subprocess.run(["dell-speaker-check"])
+        return code
+    if key not in {name for name, _, _ in COMPONENTS}:
+        print(f"unknown component: {key}")
+        return 2
+    if os.geteuid() != 0:
+        print("this step needs administrator rights")
+        return 1
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
+    if key == "touchscreen":
+        print("Enabling the touchscreen repair timer ...", flush=True)
+        subprocess.run(["systemctl", "daemon-reload"])
+        code = subprocess.run(["systemctl", "enable", "--now", "egalax-touchscreen-check.timer"]).returncode
+        subprocess.run(["systemctl", "start", "--no-block", "egalax-touchscreen-check.service"])
+        return code
+    if key == "gps":
+        print("Updating package lists ...", flush=True)
+        subprocess.run(["apt-get", "update", "-qq"], env=env)
+        print("Installing gpsd and gpsd-clients ...", flush=True)
+        code = subprocess.run(["apt-get", "install", "-y", "gpsd", "gpsd-clients"], env=env).returncode
+        if code:
+            return code
+        subprocess.run(["systemctl", "enable", "--now", "gpsd.socket"])
+        port, _ = ublox_port()
+        if port:
+            print(f"Attaching {port} to gpsd ...", flush=True)
+            return subprocess.run(["gpsdctl", "add", port]).returncode
+        print("No u-blox receiver found; plug it in and run this step again.")
+        return 0
+    print("Checking the graphics driver ...", flush=True)
+    return subprocess.run(["/usr/bin/dell-gpu-check", "--install"], env=env).returncode
 
 
 def status():
@@ -141,6 +243,8 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--install", action="store_true")
     group.add_argument("--watch", action="store_true")
+    group.add_argument("--json", action="store_true", help="component status as JSON")
+    group.add_argument("--apply", metavar="ID", help="install one component")
     group.add_argument("--attach-gps", action="store_true", help="attach u-blox receiver to gpsd (root)")
     args = parser.parse_args()
     if args.attach_gps:
@@ -148,6 +252,11 @@ def main():
         if not port or os.geteuid() != 0:
             return 1
         return subprocess.run(["gpsdctl", "add", port]).returncode
+    if args.json:
+        print(json.dumps(components()))
+        return 0
+    if args.apply:
+        return apply(args.apply)
     if args.install:
         return install()
     if args.watch:

@@ -1,40 +1,236 @@
-#!/bin/sh
-# Simple status/repair window for the Dell Rugged 7404 fixes.
-while :; do
-    ts_timer=$(systemctl is-active egalax-touchscreen-check.timer 2>/dev/null)
-    spk=$(systemctl --user is-active dell-speaker-check.service 2>/dev/null)
-    choice=$(zenity --list --title="Dell Rugged 7404 Setup" --width=460 --height=400 \
-        --text="Touchscreen check timer: ${ts_timer}\nSpeaker helper (this user): ${spk}" \
-        --column=Action \
-        "Repair touchscreen now" \
-        "Start speaker helper" \
-        "Show live status (terminal)" \
-        "Install / fix everything (terminal)" \
-        "Show status details" \
-        "Quit") || exit 0
-    case "$choice" in
-        "Repair touchscreen now")
-            if out=$(pkexec /usr/sbin/egalax-touchscreen-check 2>&1); then
-                zenity --info --text="Touchscreen check finished.\n\n$out" --width=420
-            else
-                zenity --error --text="Touchscreen check failed.\n\n$out" --width=420
-            fi ;;
-        "Start speaker helper")
-            if systemctl --user enable --now dell-speaker-check.service 2>&1; then
-                zenity --info --text="Speaker helper started." --width=300
-            else
-                zenity --error --text="Could not start the speaker helper." --width=300
-            fi ;;
-        "Show live status (terminal)")
-            x-terminal-emulator -e sh -c '/usr/bin/dell-rugged-7404-status --watch' ||
-                zenity --error --text="No terminal emulator found. Run: dell-rugged-7404-status --watch" --width=420 ;;
-        "Install / fix everything (terminal)")
-            x-terminal-emulator -e sh -c '/usr/bin/dell-rugged-7404-status --install; echo; read -p "Press Enter to close" _' ||
-                zenity --error --text="No terminal emulator found. Run: dell-rugged-7404-status --install" --width=420 ;;
-        "Show status details")
-            { /usr/bin/dell-speaker-check --status 2>&1
-              echo; systemctl status egalax-touchscreen-check.timer --no-pager 2>&1; } |
-                zenity --text-info --title="Status" --width=640 --height=420 ;;
-        *) exit 0 ;;
-    esac
-done
+#!/usr/bin/python3
+"""Dell Rugged 7404 Setup: click to install each fix and see whether it is installed.
+
+Nothing is installed until you press a button. Run with --first-run from the login
+autostart entry: the window then opens only once per user.
+"""
+import json
+import os
+import queue
+import shutil
+import subprocess
+import sys
+import threading
+
+STATUS_TOOL = "/usr/bin/dell-rugged-7404-status"
+MARKER = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+                      "dell-rugged-7404", "setup-seen")
+STATES = {  # state -> (badge text, colour, button text)
+    "installed": ("● Installed", "#2e7d32", "Re-run"),
+    "partial": ("● Needs attention", "#ef6c00", "Fix"),
+    "missing": ("● Not installed", "#c62828", "Install"),
+}
+LIGHT = {"bg": "#f6f5f4", "fg": "#2e3436", "card": "#ffffff", "btn": "#e8e6e3", "log": "#ffffff"}
+DARK = {"bg": "#2b2b2b", "fg": "#eeeeec", "card": "#363636", "btn": "#444444", "log": "#1e1e1e"}
+AMBER = "#f2b01e"
+
+
+def system_is_dark():
+    def get(key):
+        try:
+            return subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", key],
+                                  capture_output=True, text=True, timeout=3).stdout.strip().strip("'")
+        except (OSError, subprocess.SubprocessError):
+            return ""
+    scheme = get("color-scheme")
+    if scheme in ("prefer-dark", "prefer-light"):
+        return scheme == "prefer-dark"
+    return "dark" in get("gtk-theme").lower()
+
+
+def load_status():
+    out = subprocess.run([STATUS_TOOL, "--json"], capture_output=True, text=True, timeout=90).stdout
+    return json.loads(out)
+
+
+def install_command(key):
+    """The speaker helper is per-user; everything else needs administrator rights."""
+    if key == "speaker" or os.geteuid() == 0:
+        return [STATUS_TOOL, "--apply", key]
+    return ["pkexec", STATUS_TOOL, "--apply", key]
+
+
+def mark_seen():
+    try:
+        os.makedirs(os.path.dirname(MARKER), exist_ok=True)
+        open(MARKER, "w").close()
+    except OSError:
+        pass
+
+
+def run_app():
+    import tkinter as tk
+    from tkinter import font as tkfont
+
+    root = tk.Tk(className="dell-rugged-7404-setup")
+    root.title("Dell Rugged 7404 Setup")
+    root.geometry("700x640")
+    pal = dict(DARK if system_is_dark() else LIGHT)
+    title_font = tkfont.Font(family="DejaVu Sans", size=15, weight="bold")
+    bold = tkfont.Font(family="DejaVu Sans", size=11, weight="bold")
+    normal = tkfont.Font(family="DejaVu Sans", size=10)
+    small = tkfont.Font(family="DejaVu Sans", size=9)
+    mono = tkfont.Font(family="DejaVu Sans Mono", size=9)
+
+    events = queue.Queue()
+    rows, busy = {}, {"id": None, "queue": []}
+    root.configure(bg=pal["bg"])
+
+    tk.Label(root, text="Dell Latitude 14 Rugged Extreme 7404", font=title_font,
+             bg=pal["bg"], fg=pal["fg"], anchor="w").pack(fill="x", padx=14, pady=(14, 0))
+    tk.Label(root, text="Click Install next to anything you want. Nothing changes until you click.",
+             font=normal, bg=pal["bg"], fg=pal["fg"], anchor="w").pack(fill="x", padx=14, pady=(0, 8))
+
+    cards = tk.Frame(root, bg=pal["bg"])
+    cards.pack(fill="x", padx=14)
+
+    def make_row(key, title, description):
+        card = tk.Frame(cards, bg=pal["card"], padx=10, pady=8)
+        card.pack(fill="x", pady=4)
+        text = tk.Frame(card, bg=pal["card"])
+        text.pack(side="left", fill="x", expand=True)
+        tk.Label(text, text=title, font=bold, bg=pal["card"], fg=pal["fg"], anchor="w").pack(fill="x")
+        tk.Label(text, text=description, font=small, bg=pal["card"], fg=pal["fg"], anchor="w",
+                 justify="left", wraplength=360).pack(fill="x")
+        detail = tk.Label(text, text="checking...", font=small, bg=pal["card"], fg="#757575",
+                          anchor="w", justify="left", wraplength=360)
+        detail.pack(fill="x")
+        badge = tk.Label(card, text="…", font=bold, width=17, bg=pal["card"], fg="#757575")
+        badge.pack(side="left", padx=8)
+        button = tk.Button(card, text="Install", width=9, state="disabled", bg=pal["btn"], fg=pal["fg"],
+                           activebackground=AMBER, highlightbackground=pal["card"],
+                           command=lambda: start([key]))
+        button.pack(side="left")
+        rows[key] = {"badge": badge, "button": button, "detail": detail, "state": None}
+
+    for key, title, description in (
+            ("touchscreen", "Touchscreen repair", "Keeps the eGalax touchscreen working (checks every few minutes)."),
+            ("speaker", "Speaker fix", "Unmutes the HDA Intel PCH Headphone/Headset outputs that drive the speaker."),
+            ("gps", "GPS support", "Installs gpsd and the GPS tools and attaches the u-blox receiver."),
+            ("graphics", "Graphics driver", "Detects the GPUs and installs a driver only if Ubuntu recommends one.")):
+        make_row(key, title, description)
+
+    controls = tk.Frame(root, bg=pal["bg"])
+    controls.pack(fill="x", padx=14, pady=8)
+
+    def plain_button(text, command):
+        button = tk.Button(controls, text=text, command=command, bg=pal["btn"], fg=pal["fg"],
+                           activebackground=AMBER, highlightbackground=pal["bg"])
+        button.pack(side="left", padx=(0, 6))
+        return button
+
+    all_button = plain_button("Install everything missing", lambda: start(
+        [key for key, row in rows.items() if row["state"] in ("missing", "partial")]))
+    plain_button("Refresh", lambda: refresh())
+    gps_button = plain_button("Open GPS Monitor", lambda: subprocess.Popen(["/usr/bin/dell-gps-monitor"]))
+    gps_button.config(state="normal" if shutil.which("dell-gps-monitor") else "disabled")
+    plain_button("Close", root.destroy)
+
+    tk.Label(root, text="Progress", font=bold, bg=pal["bg"], fg=pal["fg"], anchor="w").pack(fill="x", padx=14)
+    log_frame = tk.Frame(root, bg=pal["bg"])
+    log_frame.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+    log = tk.Text(log_frame, height=10, font=mono, bg=pal["log"], fg=pal["fg"], relief="flat",
+                  wrap="word", state="disabled", highlightthickness=0)
+    scrollbar = tk.Scrollbar(log_frame, command=log.yview)
+    log.config(yscrollcommand=scrollbar.set)
+    scrollbar.pack(side="right", fill="y")
+    log.pack(fill="both", expand=True)
+
+    def write(text):
+        log.config(state="normal")
+        log.insert("end", text.rstrip("\n") + "\n")
+        log.see("end")
+        log.config(state="disabled")
+
+    def set_buttons(enabled):
+        for row in rows.values():
+            row["button"].config(state="normal" if enabled else "disabled")
+        all_button.config(state="normal" if enabled else "disabled")
+
+    def render(items):
+        for item in items:
+            row = rows[item["id"]]
+            row["state"] = item["state"]
+            badge, colour, action = STATES[item["state"]]
+            row["badge"].config(text=badge, fg=colour)
+            row["detail"].config(text=item["detail"])
+            row["button"].config(text=action)
+        set_buttons(True)
+
+    def refresh():
+        set_buttons(False)
+
+        def work():
+            try:
+                events.put(("status", load_status()))
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                events.put(("error", f"Could not read status: {error}"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def run_next():
+        if not busy["queue"]:
+            busy["id"] = None
+            write("Done.")
+            refresh()
+            return
+        key = busy["queue"].pop(0)
+        busy["id"] = key
+        rows[key]["badge"].config(text="⟳ Installing...", fg=AMBER)
+        write(f"--- {key} ---")
+
+        def work():
+            try:
+                process = subprocess.Popen(install_command(key), stdout=subprocess.PIPE,
+                                           stderr=subprocess.STDOUT, text=True)
+                for line in process.stdout:
+                    events.put(("log", line))
+                code = process.wait()
+                if code in (126, 127):
+                    events.put(("log", "Administrator authentication was cancelled or unavailable."))
+                elif code:
+                    events.put(("log", f"Finished with exit code {code}."))
+            except OSError as error:
+                events.put(("log", f"Could not start: {error}"))
+            events.put(("next", None))
+        threading.Thread(target=work, daemon=True).start()
+
+    def start(keys):
+        if busy["id"] is not None or not keys:
+            return
+        set_buttons(False)
+        busy["queue"] = list(keys)
+        run_next()
+
+    def pump():
+        try:
+            while True:
+                kind, payload = events.get_nowait()
+                if kind == "status":
+                    render(payload)
+                elif kind == "log":
+                    write(payload)
+                elif kind == "error":
+                    write(payload)
+                    set_buttons(True)
+                elif kind == "next":
+                    run_next()
+        except queue.Empty:
+            pass
+        root.after(150, pump)
+
+    mark_seen()
+    write("Checking what is installed ...")
+    pump()
+    refresh()
+    root.mainloop()
+
+
+def main():
+    if "--first-run" in sys.argv and os.path.exists(MARKER):
+        return 0
+    run_app()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

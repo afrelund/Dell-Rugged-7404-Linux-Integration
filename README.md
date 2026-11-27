@@ -16,11 +16,13 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
 2. Install it:
 
    ```sh
-   sudo apt install ./dell-rugged-7404_1.4.0_all.deb
+   sudo apt install ./dell-rugged-7404_1.5.0_all.deb
    ```
 
-3. Log out and back in (or run
-   `systemctl --user enable --now dell-speaker-check.service`) to start the speaker helper.
+3. Nothing is enabled automatically. Open **Dell Rugged 7404 Setup** from the app menu
+   (it also opens once at your next login) and click **Install** next to the touchscreen
+   repair, speaker fix, GPS support or graphics check. Each row shows whether it is
+   installed; administrator steps ask for your password.
 4. Lower the volume, then test sound from the built-in speaker. Check status with:
 
    ```sh

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Dell Rugged 7404 Setup (first run)
+Exec=/usr/bin/dell-rugged-7404-setup --first-run
+Terminal=false
+NoDisplay=true

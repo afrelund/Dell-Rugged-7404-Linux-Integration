@@ -1051,11 +1051,39 @@ def run_app():
                 if nav["route"] is not None:
                     clear_route()
                     return
-                tpv, wp = nav["tpv"], nav["target"]
-                if wp is None:
-                    message_dialog("Route", "Pick a target waypoint on the NAVIGATE tab first "
-                                            "(select it and tap Set target).")
-                    return
+                choose_destination()
+
+            def choose_destination():
+                dialog = Gtk.Window(title="Route to…", modal=True, transient_for=ui["win"],
+                                    default_width=460, default_height=420)
+                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12,
+                              margin_bottom=12, margin_start=12, margin_end=12)
+                box.append(label("Choose a destination", "bold"))
+
+                def pick_waypoint(wp):
+                    dialog.destroy()
+                    nav["target"] = wp
+                    refresh_waypoints()
+                    start_route(wp["lat"], wp["lon"])
+
+                def pick_on_map():
+                    dialog.destroy()
+                    placing(True, "route")
+                box.append(button("Pick a point on the map", pick_on_map))
+                box.append(label("WAYPOINTS", "bold"))
+                names = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                if not waypoints:
+                    names.append(label("No waypoints saved yet.", "hint"))
+                for wp in waypoints:
+                    names.append(button(f"{wp['name']}   {wp['lat']:.4f}, {wp['lon']:.4f}",
+                                        lambda w=wp: pick_waypoint(w)))
+                box.append(scrolled(names))
+                box.append(button("Cancel", dialog.destroy))
+                dialog.set_child(box)
+                dialog.present()
+
+            def start_route(dest_lat, dest_lon):
+                tpv = nav["tpv"]
                 if tpv.get("mode", 0) < 2 or "lat" not in tpv:
                     message_dialog("Route", "No GPS fix yet.")
                     return
@@ -1063,7 +1091,7 @@ def run_app():
 
                 def work():
                     try:
-                        result = compute_route(tpv["lat"], tpv["lon"], wp["lat"], wp["lon"])
+                        result = compute_route(tpv["lat"], tpv["lon"], dest_lat, dest_lon)
                     except Exception as error:
                         GLib.idle_add(finish, None, str(error))
                         return
@@ -1189,7 +1217,10 @@ def run_app():
                 lat, lon = viewport.widget_coords_to_location(simple, x, y)
                 add_waypoint(lat, lon)
 
-            def placing(on):
+            def placing(on, purpose="waypoint"):
+                nav["pick"] = purpose
+                ui["confirm_button"].set_label("Confirm destination" if purpose == "route"
+                                               else "Confirm waypoint")
                 ui["target"].set_visible(on)
                 ui["place_row"].set_visible(on)
                 ui["buttons_row"].set_visible(not on)
@@ -1197,7 +1228,10 @@ def run_app():
 
             def confirm_waypoint():
                 placing(False)
-                add_waypoint(viewport.get_latitude(), viewport.get_longitude())
+                if nav["pick"] == "route":
+                    start_route(viewport.get_latitude(), viewport.get_longitude())
+                else:
+                    add_waypoint(viewport.get_latitude(), viewport.get_longitude())
 
             press = Gtk.GestureLongPress()
             press.connect("pressed", lambda _g, x, y: waypoint_at(x, y))
@@ -1245,7 +1279,8 @@ def run_app():
             ui["tools_row"] = tools_row
             mapp.append(tools_row)
             place_row = Gtk.Box(spacing=4, homogeneous=True, visible=False)
-            place_row.append(button("Confirm waypoint", confirm_waypoint))
+            ui["confirm_button"] = button("Confirm waypoint", confirm_waypoint)
+            place_row.append(ui["confirm_button"])
             place_row.append(button("Cancel", lambda: placing(False)))
             ui["place_row"] = place_row
             mapp.append(place_row)

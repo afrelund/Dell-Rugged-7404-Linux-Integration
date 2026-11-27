@@ -771,6 +771,57 @@ def compute_route(lat1, lon1, lat2, lon2):
             "steps": steps, "notes": notes, "off_road": (start_path, end_path)}
 
 
+def route_path(route):
+    """Every (lat, lon) along a route, off-road legs included, in travel order."""
+    start_path, end_path = route.get("off_road", ([], []))
+    return list(start_path) + [(p["lat"], p["lon"]) for p in route["points"]] + list(end_path)
+
+
+def sample_path(path, count=80):
+    """Evenly spaced (km_from_start, lat, lon) samples along a path."""
+    cumulative = [0.0]
+    for a, b in zip(path, path[1:]):
+        cumulative.append(cumulative[-1] + bearing_distance(*a, *b)[0])
+    total = cumulative[-1]
+    if total <= 0 or len(path) < 2:
+        return []
+    samples, index = [], 0
+    for step in range(count):
+        target = total * step / (count - 1)
+        while index < len(path) - 2 and cumulative[index + 1] < target:
+            index += 1
+        span = cumulative[index + 1] - cumulative[index]
+        t = (target - cumulative[index]) / span if span else 0
+        samples.append((target / 1000, path[index][0] + (path[index + 1][0] - path[index][0]) * t,
+                        path[index][1] + (path[index + 1][1] - path[index][1]) * t))
+    return samples
+
+
+def elevation_profile(route, count=80):
+    """[(km, metres)] along a route using the free Open-Meteo elevation service (needs internet)."""
+    import urllib.parse
+    import urllib.request
+    samples = sample_path(route_path(route), count)
+    if not samples:
+        raise RouteError("Route too short for an elevation profile.")
+    url = "https://api.open-meteo.com/v1/elevation?" + urllib.parse.urlencode(
+        {"latitude": ",".join(f"{p[1]:.5f}" for p in samples),
+         "longitude": ",".join(f"{p[2]:.5f}" for p in samples)})
+    try:
+        with urllib.request.urlopen(url, timeout=20) as response:
+            heights = json.load(response)["elevation"]
+    except (OSError, KeyError, ValueError) as error:
+        raise RouteError(f"Elevation needs an internet connection ({error}).")
+    return [(p[0], h) for p, h in zip(samples, heights)]
+
+
+def profile_stats(profile):
+    heights = [h for _, h in profile]
+    gain = sum(max(b - a, 0) for a, b in zip(heights, heights[1:]))
+    loss = sum(max(a - b, 0) for a, b in zip(heights, heights[1:]))
+    return {"min": min(heights), "max": max(heights), "gain": gain, "loss": loss}
+
+
 def system_is_dark():
     """True when the Ubuntu/GNOME appearance setting is dark."""
     def get(schema, key):
@@ -1270,7 +1321,61 @@ def run_app():
                 off_road_layers.append(pair)
             nav["route"] = None
 
+            def draw_elevation(_area, cr, width, height):
+                fill_bg(cr, width, height)
+                profile = ui.get("elevation")
+                if not profile:
+                    text_at(cr, width / 2, height / 2, ui.get("elevation_note", "loading elevation..."), 11)
+                    return
+                stats = profile_stats(profile)
+                low, high = stats["min"], max(stats["max"], stats["min"] + 10)
+                left_pad, top, foot = 48, 18, 16
+                plot_h, plot_w = height - top - foot, width - left_pad - 6
+                km_total = max(profile[-1][0], 0.001)
+                points = [(left_pad + km / km_total * plot_w, top + plot_h * (1 - (h - low) / (high - low)))
+                          for km, h in profile]
+                cr.move_to(points[0][0], top + plot_h)
+                for x, y in points:
+                    cr.line_to(x, y)
+                cr.line_to(points[-1][0], top + plot_h)
+                cr.close_path()
+                cr.set_source_rgba(0.95, 0.70, 0.12, 0.35)
+                cr.fill()
+                for (x0, y0), (x1, y1) in zip(points, points[1:]):
+                    line(cr, x0, y0, x1, y1, AMBER, 2)
+                text_at(cr, 2, top, f"{high:.0f} m", 9, pal["ringtext"], anchor="l")
+                text_at(cr, 2, top + plot_h, f"{low:.0f} m", 9, pal["ringtext"], anchor="l")
+                text_at(cr, left_pad, height - 2, "0 km", 9, pal["ringtext"], anchor="sw")
+                text_at(cr, width - 4, height - 2, f"{km_total:.1f} km", 9, pal["ringtext"], anchor="se")
+                text_at(cr, width / 2, 8, f"ELEVATION  ▲ {stats['gain']:.0f} m  ▼ {stats['loss']:.0f} m  "
+                        f"({stats['gain'] * 3.28084:.0f} / {stats['loss'] * 3.28084:.0f} ft)", 10)
+
+            elevation_area = drawing(draw_elevation, 120)
+            elevation_area.set_visible(False)
+            ui["elevation_area"] = elevation_area
+
+            def load_elevation(route):
+                ui["elevation"], ui["elevation_note"] = None, "loading elevation..."
+                elevation_area.set_visible(True)
+                elevation_area.queue_draw()
+
+                def work():
+                    try:
+                        profile, note = elevation_profile(route), ""
+                    except Exception as error:
+                        profile, note = None, str(error)
+                    GLib.idle_add(show_elevation, route, profile, note)
+                threading.Thread(target=work, daemon=True).start()
+
+            def show_elevation(route, profile, note):
+                if nav["route"] is route:
+                    ui["elevation"], ui["elevation_note"] = profile, note
+                    elevation_area.queue_draw()
+                return False
+
             def clear_route():
+                ui["elevation"] = None
+                elevation_area.set_visible(False)
                 for layer in [route_layer] + [x for pair in off_road_layers for x in pair]:
                     for node in list(layer.get_nodes()):
                         layer.remove_node(node)
@@ -1397,6 +1502,7 @@ def run_app():
                             for lat, lon in path:
                                 layer.add_node(Shumate.Coordinate.new_full(lat, lon))
                     ui["route_button"].set_label("Clear route")
+                    load_elevation(result)
                     ui["route_note"].set_label(f"{result['km']:.1f} km · {format_duration(result['minutes'])}")
                     show_directions(result)
                     return False
@@ -1553,6 +1659,7 @@ def run_app():
             overlay.add_overlay(target)
             ui["target"] = target
             mapp.append(overlay)
+            mapp.append(elevation_area)
             buttons = Gtk.Box(spacing=4, homogeneous=True)
             buttons.append(button("Center on me", center_on_me))
             buttons.append(button("Add waypoint", lambda: placing(True)))

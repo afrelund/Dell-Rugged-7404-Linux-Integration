@@ -16,7 +16,7 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
 2. Install it:
 
    ```sh
-   sudo apt install ./dell-rugged-7404_1.2.0_all.deb
+   sudo apt install ./dell-rugged-7404_1.2.1_all.deb
    ```
 
 3. Log out and back in (or run

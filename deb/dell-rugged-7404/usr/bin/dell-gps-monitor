@@ -1823,7 +1823,10 @@ def run_app():
                     return
                 n, w = viewport.widget_coords_to_location(simple, 0, 0)
                 s_, e = viewport.widget_coords_to_location(simple, width, height)
-                found = cells_in_bbox(min(s_, n), min(w, e), max(s_, n), max(w, e))
+                found = cells_in_bbox(min(s_, n), min(w, e), max(s_, n), max(w, e), 1000)
+                centre_lat, centre_lon = (n + s_) / 2, (w + e) / 2
+                found.sort(key=lambda t: (t[5] - centre_lat) ** 2 + (t[6] - centre_lon) ** 2)
+                found = found[:120]
                 for radio, mcc, net, area, cell, lat, lon in found:
                     quality = cells["seen"].get((mcc, net, cell))
                     icon = Gtk.DrawingArea(content_width=26, content_height=30)
@@ -1839,14 +1842,17 @@ def run_app():
                                           ". " + cells["serving"])
 
             def schedule_cells(*_args):
-                if cells["on"] and not cells["pending"]:
-                    cells["pending"] = True
+                # Redraw only once the map has stopped moving, so zoom and pan stay responsive.
+                if not cells["on"]:
+                    return
+                if cells["pending"]:
+                    GLib.source_remove(cells["pending"])
 
-                    def run():
-                        cells["pending"] = False
-                        draw_cells()
-                        return False
-                    GLib.timeout_add(500, run)
+                def run():
+                    cells["pending"] = False
+                    draw_cells()
+                    return False
+                cells["pending"] = GLib.timeout_add(800, run)
             for prop in ("latitude", "longitude", "zoom-level"):
                 viewport.connect(f"notify::{prop}", schedule_cells)
 
@@ -1864,12 +1870,13 @@ def run_app():
                     cells["seen"][(info["mcc"], info["mnc"], info["cid"])] = info["quality"]
                     cells["serving"] = (f"Serving cell {info['mcc']}-{info['mnc']} #{info['cid']}, "
                                         f"signal {info['quality']}%.")
+                    if cells["on"] and cells.get("last") != (info["cid"], info["quality"]):
+                        cells["last"] = (info["cid"], info["quality"])
+                        draw_cells()
                 else:
                     reason = info.get("failed") or info.get("state") or "unknown"
                     cells["serving"] = ("Modem: no SIM card, so no towers can be heard." if reason == "sim-missing"
                                         else f"Modem: {reason}; not registered on a network.")
-                if cells["on"]:
-                    draw_cells()
                 return False
             GLib.timeout_add(8000, poll_modem)
 
@@ -2507,9 +2514,16 @@ def run_app():
             tab.add_css_class("map-drawer-tab")
             tab.set_size_request(40, 90)
 
+            # A collapsed drawer is hidden so its tall, empty box does not sit over the zoom buttons.
+            drawer.set_visible(False)
+
             def set_drawer(on):
+                if on:
+                    drawer.set_visible(True)
                 drawer.set_reveal_child(on)
                 tab.set_label("\u25B6" if on else "\u25C0")
+            drawer.connect("notify::child-revealed",
+                           lambda d, _p: d.set_visible(d.get_child_revealed() or d.get_reveal_child()))
 
             def in_panel(text, callback):
                 def run():

@@ -826,9 +826,10 @@ CSS = f"""
 .tab-button {{ min-height: 56px; font-weight: bold; }}
 .tab-button:checked {{ background: {AMBER}; color: #1a1200; }}
 .section {{ background: {AMBER}; color: #1a1200; font-weight: bold; padding: 4px 8px; }}
-.value-button {{ padding: 4px 8px; min-height: 40px; }}
-.value-button label {{ font-family: monospace; }}
-.row-title {{ font-weight: bold; font-family: monospace; padding: 6px 8px 0 8px; }}
+.coord-row {{ padding: 3px 8px; min-height: 28px; }}
+.coord-row-alt {{ background: alpha(currentColor, 0.09); }}
+.coord-row:active {{ background: alpha({AMBER}, 0.35); }}
+.row-title {{ font-weight: bold; font-family: monospace; }}
 .action {{ min-height: 48px; }}
 .mono {{ font-family: monospace; }}
 .hint {{ font-size: 9pt; opacity: 0.8; }}
@@ -1774,25 +1775,42 @@ def run_app():
             following = child.get_next_sibling()
             box.remove(child)
             child = following
+        shade = {"n": 0}
         for name, value in lines:
             if value is None:
+                shade["n"] = 0
                 heading = label(name, "section")
-                heading.set_margin_top(8)
+                heading.set_margin_top(4)
                 box.append(heading)
                 continue
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            row.add_css_class("coord-row")
+            if shade["n"] % 2:
+                row.add_css_class("coord-row-alt")
+            shade["n"] += 1
             title = label(f"{name}:", "row-title")
-            title.set_size_request(225, -1)
-            title.set_valign(Gtk.Align.CENTER)
+            title.set_size_request(205, -1)
             row.append(title)
-            value_button = Gtk.Button(has_frame=False, hexpand=True)
-            value_button.add_css_class("value-button")
-            value_button.add_css_class("flat")
             value_label = label(value, "mono", wrap=True)
             value_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
-            value_button.set_child(value_label)
-            value_button.connect("clicked", lambda _b, v=value: copy_text(v))
-            row.append(value_button)
+            value_label.set_hexpand(True)
+            row.append(value_label)
+            tap = Gtk.GestureClick()
+            touch = {}
+
+            def pressed(_g, _n, x, y, touch=touch):
+                touch["start"] = (x, y, ui["live_scroll"].get_vadjustment().get_value())
+
+            def released(_g, _n, x, y, touch=touch, v=value):
+                # Only a still tap copies; a drag or scroll never does.
+                start = touch.pop("start", None)
+                if start and abs(x - start[0]) < 12 and abs(y - start[1]) < 12 \
+                        and abs(ui["live_scroll"].get_vadjustment().get_value() - start[2]) < 3:
+                    copy_text(v)
+            tap.connect("pressed", pressed)
+            tap.connect("released", released)
+            tap.connect("cancel", lambda _g, _s, touch=touch: touch.clear())
+            row.add_controller(tap)
             box.append(row)
 
     # ----- refresh loop -----

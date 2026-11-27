@@ -16,7 +16,7 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
 2. Install it:
 
    ```sh
-   sudo apt install ./dell-rugged-7404_1.3.5_all.deb
+   sudo apt install ./dell-rugged-7404_1.4.0_all.deb
    ```
 
 3. Log out and back in (or run
@@ -33,6 +33,14 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
 Open **Dell Rugged GPS Monitor** from the application menu, or run `dell-gps-monitor`.
 
 The window follows the Ubuntu **Settings → Appearance** light/dark choice and switches live.
+
+The right side has five tabs:
+
+- **LIVE** – coordinates in every common format (click any value to copy it), time, satellites, and the JAMMING INDICATOR. A red JAMMING ALERT appears in the title (with a beep) when interference is strong.
+- **SIGNALS** – fix/DOP/accuracy dashboard, per-satellite signal-strength bars, and a jamming history graph.
+- **NAVIGATE** – compass with your heading, saved waypoints, and distance/bearing to a chosen target.
+- **TRACK** – log your position once per second to CSV, and export the session as GPX (with waypoints). Files go to `~/GPS-Tracks`.
+- **TOOLS** – sunrise/sunset/daylight for your position, and receiver setup (enable/disable Galileo, GLONASS, BeiDou; 1/2/5 Hz update rate). Setup buttons ask for confirmation and are not saved to the receiver's flash.
 
 On first launch the app pins itself to the Ubuntu dock (once; unpin it and it stays unpinned). Run `dell-gps-monitor --pin-dock` to pin without opening the window.
 It shows a satellite sky plot (colored by GPS, Galileo, GLONASS, BeiDou, SBAS, QZSS;

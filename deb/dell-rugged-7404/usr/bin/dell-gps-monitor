@@ -1112,6 +1112,8 @@ def run_app():
 
         # left: sky view
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, hexpand=True)
+        ui["status"] = label("", "status")
+        left.append(ui["status"])
         ui["sky_area"] = drawing(draw_sky, 400, 400, expand=True)
         left.append(ui["sky_area"])
         legend = Gtk.Box(spacing=8)
@@ -1127,8 +1129,6 @@ def run_app():
 
         # right: status + tabs
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, width_request=500)
-        ui["status"] = label("", "status")
-        right.append(ui["status"])
         tabbar = Gtk.Box(spacing=4, homogeneous=True, margin_top=4, margin_bottom=6)
         stack = Gtk.Stack(vexpand=True, hexpand=True)
         ui["stack"] = stack
@@ -1526,7 +1526,6 @@ def run_app():
                 nav["full_map"] = full
                 ui["left"].set_visible(not full)
                 ui["tabbar"].set_visible(not full)
-                ui["status"].set_visible(not full)
                 ui["right"].set_size_request(-1 if full else 500, -1)
                 ui["full_button"].set_label("Exit full map" if full else "Full map")
 
@@ -1809,12 +1808,12 @@ def run_app():
             ui["win"].get_display().beep()
         nav["alert"] = alert
         if not connected:
-            ui["status"].set_markup(colored("gpsd not running", "#c62828"))
+            ui["status"].set_markup(colored("GPSD NOT RUNNING", "#c62828"))
         elif device is None:
-            ui["status"].set_markup(colored("No GPS attached to gpsd", "#c62828"))
+            ui["status"].set_markup(colored("NO GPS ATTACHED TO GPSD", "#c62828"))
         else:
             fix = {0: "No data", 1: "No fix", 2: "2D fix", 3: "3D fix"}.get(mode, "?")
-            ui["status"].set_markup(colored(("⚠ JAMMING ALERT  " if alert else "") + fix,
+            ui["status"].set_markup(colored(("⚠ JAMMING ALERT  " if alert else "") + fix.upper(),
                                             "#c62828" if alert else "#2e7d32" if mode >= 2 else "#ef6c00"))
 
         if "map" in ui and mode >= 2 and "lat" in tpv and "lon" in tpv:

@@ -1,11 +1,13 @@
 Package: dell-rugged-7404
-Version: 1.0.2
+Version: 1.1.0
 Section: utils
 Priority: optional
 Architecture: all
-Depends: python3, alsa-utils, udev, systemd, zenity, policykit-1 | polkitd
+Depends: python3, alsa-utils, udev, systemd, zenity, gpsd, gpsd-clients, pciutils, policykit-1 | polkitd
 Maintainer: afrelund <noreply@users.noreply.github.com>
 Description: Linux fixes for Dell Latitude 14 Rugged Extreme (7404)
  Touchscreen (eGalax 0eef:0001) classification/autosuspend repair and
- built-in speaker routing workaround, with a small setup/status window.
+ built-in speaker routing workaround, u-blox GPS (gpsd) attachment, GPU
+ driver check, and a setup window plus terminal status/install tool.
+ Tested on Ubuntu 26.04 LTS.
  Only for the Latitude 14 Rugged Extreme (7404).

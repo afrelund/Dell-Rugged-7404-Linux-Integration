@@ -1,0 +1,161 @@
+#!/usr/bin/python3
+"""Terminal status for the Dell Latitude 7404 integration.
+
+  dell-rugged-7404-status            show what is installed / working
+  dell-rugged-7404-status --install  install missing packages, showing progress
+  dell-rugged-7404-status --watch    refresh the status every 2 seconds
+"""
+import argparse
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+
+PACKAGES = {
+    "python3": "runs the helper scripts",
+    "alsa-utils": "speaker unmute helper (amixer)",
+    "gpsd": "GPS daemon for the u-blox receiver",
+    "gpsd-clients": "GPS tools (cgps, gpspipe, ubxtool)",
+    "pciutils": "GPU detection (lspci)",
+    "zenity": "setup window",
+}
+UBLOX = "1546"
+COLORS = {"OK": "32", "WORK": "33", "TODO": "31", "INFO": "36"}
+LABELS = {"OK": " OK ", "WORK": "WORK", "TODO": "TODO", "INFO": "INFO"}
+
+
+def line(state, text):
+    tag = f"\033[{COLORS[state]}m[{LABELS[state]}]\033[0m" if sys.stdout.isatty() else f"[{LABELS[state]}]"
+    print(f"{tag} {text}", flush=True)
+
+
+def run(*command):
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        return result.returncode, result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+
+
+def installed(package):
+    code, out = run("dpkg-query", "-W", "-f=${Status}", package)
+    return code == 0 and out.endswith("installed")
+
+
+def read(path):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return ""
+
+
+def ublox_port():
+    for device in Path("/sys/bus/usb/devices").glob("*"):
+        if read(device / "idVendor") == UBLOX:
+            for tty in device.glob("*/tty/*"):
+                return f"/dev/{tty.name}", read(device / "product") or "u-blox receiver"
+            return None, read(device / "product") or "u-blox receiver"
+    return None, None
+
+
+def status():
+    print("Dell Latitude 14 Rugged Extreme (7404) - status\n")
+    print("Packages")
+    for package, purpose in PACKAGES.items():
+        line("OK" if installed(package) else "TODO", f"{package}: {purpose}")
+
+    print("\nTouchscreen")
+    active = run("systemctl", "is-active", "egalax-touchscreen-check.timer")[1]
+    line("OK" if active == "active" else "TODO", f"repair timer: {active or 'unknown'}")
+
+    print("\nSpeaker")
+    active = run("systemctl", "--user", "is-active", "dell-speaker-check.service")[1]
+    line("OK" if active == "active" else "TODO", f"speaker helper (this user): {active or 'unknown'}")
+    if shutil.which("dell-speaker-check"):
+        line("INFO", run("dell-speaker-check", "--status")[1] or "speaker status unavailable")
+
+    print("\nGPS")
+    port, product = ublox_port()
+    if product is None:
+        line("TODO", "no u-blox USB receiver found")
+    else:
+        line("OK" if port else "TODO", f"{product}: {port or 'no serial port yet'}")
+        active = run("systemctl", "is-active", "gpsd.socket")[1]
+        line("OK" if active == "active" else "TODO", f"gpsd socket: {active or 'unknown'}")
+        if shutil.which("gpspipe"):
+            code, out = run("gpspipe", "-w", "-n", "6")
+            attached = port is not None and port in out
+            line("OK" if attached else "TODO",
+                 f"gpsd has {port} attached" if attached else "gpsd has no device attached (run --install)")
+
+    print("\nGraphics")
+    if shutil.which("dell-gpu-check"):
+        for text in run("dell-gpu-check")[1].splitlines():
+            line("INFO", text.strip())
+
+
+def install():
+    if os.geteuid() != 0:
+        os.execvp("sudo", ["sudo", sys.executable, *sys.argv])
+    missing = [package for package in PACKAGES if not installed(package)]
+    print("Updating package lists ...", flush=True)
+    line("WORK", "apt-get update")
+    subprocess.run(["apt-get", "update", "-qq"], check=False)
+    failed = []
+    for package in PACKAGES:
+        if package not in missing:
+            line("OK", f"{package}: already installed")
+            continue
+        line("WORK", f"{package}: installing ...")
+        result = subprocess.run(["apt-get", "install", "-y", "-qq", package],
+                                capture_output=True, text=True)
+        if result.returncode == 0 and installed(package):
+            line("OK", f"{package}: installed")
+        else:
+            failed.append(package)
+            line("TODO", f"{package}: FAILED - {result.stderr.strip().splitlines()[-1:] or ['see apt output']}")
+
+    port, _ = ublox_port()
+    if port and installed("gpsd"):
+        line("WORK", f"attaching {port} to gpsd ...")
+        result = subprocess.run(["gpsdctl", "add", port], capture_output=True, text=True)
+        line("OK" if result.returncode == 0 else "TODO",
+             f"{port} attached to gpsd" if result.returncode == 0 else f"gpsdctl failed: {result.stderr.strip()}")
+    line("WORK", "checking graphics driver ...")
+    if shutil.which("dell-gpu-check"):
+        subprocess.run(["dell-gpu-check", "--install"])
+    print()
+    line("TODO" if failed else "OK", "finished with errors" if failed else "all packages done")
+    return 1 if failed else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--install", action="store_true")
+    group.add_argument("--watch", action="store_true")
+    group.add_argument("--attach-gps", action="store_true", help="attach u-blox receiver to gpsd (root)")
+    args = parser.parse_args()
+    if args.attach_gps:
+        port, _ = ublox_port()
+        if not port or os.geteuid() != 0:
+            return 1
+        return subprocess.run(["gpsdctl", "add", port]).returncode
+    if args.install:
+        return install()
+    if args.watch:
+        try:
+            while True:
+                print("\033[2J\033[H", end="")
+                status()
+                time.sleep(2)
+        except KeyboardInterrupt:
+            return 0
+    status()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

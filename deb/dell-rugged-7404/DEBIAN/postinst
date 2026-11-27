@@ -11,6 +11,8 @@ if [ "$1" = configure ]; then
     systemctl enable egalax-touchscreen-check.timer || true
     systemctl restart egalax-touchscreen-check.timer || true
     systemctl start --no-block egalax-touchscreen-check.service || true
+    # Attach a u-blox GPS receiver to gpsd if one is plugged in.
+    /usr/bin/python3 /usr/bin/dell-rugged-7404-status --attach-gps >/dev/null 2>&1 || true
     # Enable the speaker helper for every desktop user.
     systemctl --global enable dell-speaker-check.service || true
     echo "dell-rugged-7404: log out and in (or run 'systemctl --user enable --now dell-speaker-check.service') to start the speaker helper."

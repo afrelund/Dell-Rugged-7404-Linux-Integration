@@ -6,7 +6,6 @@ autostart entry: the window then opens only once per user.
 """
 import json
 import os
-import queue
 import shutil
 import subprocess
 import sys
@@ -21,22 +20,7 @@ STATES = {  # state -> (badge text, colour, button text)
     "partial": ("● Error", ORANGE, "Fix"),
     "missing": ("● Not installed", RED, "Install"),
 }
-LIGHT = {"bg": "#f6f5f4", "fg": "#2e3436", "card": "#ffffff", "btn": "#e8e6e3", "log": "#ffffff"}
-DARK = {"bg": "#2b2b2b", "fg": "#eeeeec", "card": "#363636", "btn": "#444444", "log": "#1e1e1e"}
 AMBER = "#f2b01e"
-
-
-def system_is_dark():
-    def get(key):
-        try:
-            return subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", key],
-                                  capture_output=True, text=True, timeout=3).stdout.strip().strip("'")
-        except (OSError, subprocess.SubprocessError):
-            return ""
-    scheme = get("color-scheme")
-    if scheme in ("prefer-dark", "prefer-light"):
-        return scheme == "prefer-dark"
-    return "dark" in get("gtk-theme").lower()
 
 
 def load_status():
@@ -59,209 +43,242 @@ def mark_seen():
         pass
 
 
+ROWS = (
+    ("touchscreen", "Touchscreen repair", "Keeps the eGalax touchscreen working (checks every few minutes)."),
+    ("speaker", "Speaker fix", "Unmutes the HDA Intel PCH Headphone/Headset outputs that drive the speaker."),
+    ("gps", "GPS support", "Installs gpsd and the GPS tools and attaches the u-blox receiver."),
+    ("graphics", "Graphics driver", "Detects the GPUs and installs a driver only if Ubuntu recommends one."),
+    ("smartcard", "Smart card / ID card (CAC)", "Installs the smart card service and tools so the ID card reader works."),
+    ("rfid", "RFID / NFC reader", "Adds contactless tag support on top of the smart card service."),
+    ("lte", "4G LTE modem", "Dell Wireless 5808e: enables ModemManager and checks the modem is detected."),
+    ("sdr", "Software-defined radio", "RTL-SDR USB dongle: installs rtl-sdr and the Gqrx receiver."),
+    ("battery", "Battery health", "Shows battery wear (informational; nothing to install)."),
+    ("firmware", "Firmware updates", "Refreshes Dell firmware/BIOS updates (never installs them for you)."),
+)
+
+
+def build_css():
+    css = "button.touch { min-height: 48px; padding: 6px 14px; }\n"
+    css += "button.touch.wide { min-width: 120px; }\n"
+    for name, colour in (("red", RED), ("orange", ORANGE), ("green", GREEN)):
+        css += (f"button.state-{name} {{ background: {colour}; color: #ffffff; "
+                f"background-image: none; }}\n")
+    css += f"button.state-amber {{ background: {AMBER}; color: #000000; background-image: none; }}\n"
+    css += ".card { padding: 10px; border-radius: 8px; background: alpha(currentColor, 0.07); }\n"
+    for name, colour in (("red", RED), ("orange", ORANGE), ("green", GREEN), ("amber", AMBER)):
+        css += f"label.badge-{name} {{ color: {colour}; font-weight: bold; }}\n"
+    css += "label.dim { opacity: 0.7; }\n"
+    return css
+
+
+COLOUR_NAME = {GREEN: "green", ORANGE: "orange", RED: "red"}
+
+
 def run_app():
-    import tkinter as tk
-    from tkinter import font as tkfont
+    import gi
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import GLib, Gtk, Pango
 
-    root = tk.Tk(className="dell-rugged-7404-setup")
-    root.title("Dell Rugged 7404 Setup")
-    root.geometry("720x700")
-    pal = dict(DARK if system_is_dark() else LIGHT)
-    title_font = tkfont.Font(family="DejaVu Sans", size=15, weight="bold")
-    bold = tkfont.Font(family="DejaVu Sans", size=11, weight="bold")
-    normal = tkfont.Font(family="DejaVu Sans", size=10)
-    small = tkfont.Font(family="DejaVu Sans", size=9)
-    mono = tkfont.Font(family="DejaVu Sans Mono", size=9)
+    GLib.set_prgname("dell-rugged-7404-setup")
+    GLib.set_application_name("Dell Rugged 7404 Setup")
 
-    events = queue.Queue()
-    rows, busy = {}, {"id": None, "queue": []}
-    failed = set()
-    root.configure(bg=pal["bg"])
+    class SetupWindow(Gtk.ApplicationWindow):
+        def __init__(self, app):
+            super().__init__(application=app, title="Dell Rugged 7404 Setup")
+            self.set_default_size(720, 760)
+            self.set_icon_name("dell-rugged-7404-setup")
+            self.rows = {}
+            self.busy = None
+            self.queue = []
+            self.failed = set()
+            self.state_classes = {}
 
-    tk.Label(root, text="Dell Latitude 14 Rugged Extreme 7404", font=title_font,
-             bg=pal["bg"], fg=pal["fg"], anchor="w").pack(fill="x", padx=14, pady=(14, 0))
-    tk.Label(root, text="Click Install next to anything you want. Nothing changes until you click.",
-             font=normal, bg=pal["bg"], fg=pal["fg"], anchor="w").pack(fill="x", padx=14, pady=(0, 8))
+            outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            for side in ("top", "bottom", "start", "end"):
+                getattr(outer, f"set_margin_{side}")(14)
+            self.set_child(outer)
 
-    holder = tk.Frame(root, bg=pal["bg"])
-    holder.pack(fill="both", expand=True, padx=14)
-    canvas = tk.Canvas(holder, bg=pal["bg"], highlightthickness=0, height=330)
-    list_bar = tk.Scrollbar(holder, command=canvas.yview)
-    canvas.configure(yscrollcommand=list_bar.set)
-    list_bar.pack(side="right", fill="y")
-    canvas.pack(side="left", fill="both", expand=True)
-    cards = tk.Frame(canvas, bg=pal["bg"])
-    window = canvas.create_window((0, 0), window=cards, anchor="nw")
-    cards.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-    canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
-    for event, step in (("<Button-4>", -1), ("<Button-5>", 1)):
-        root.bind_all(event, lambda e, step=step: canvas.yview_scroll(step * 2, "units"))
-    root.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-2 if e.delta > 0 else 2, "units"))
+            title = Gtk.Label(label="Dell Latitude 14 Rugged Extreme 7404", xalign=0)
+            title.set_markup("<span size='large' weight='bold'>Dell Latitude 14 Rugged Extreme 7404</span>")
+            title.set_xalign(0)
+            outer.append(title)
+            intro = Gtk.Label(label="Click Install next to anything you want. Nothing changes until you click.",
+                              xalign=0, wrap=True)
+            outer.append(intro)
 
-    def make_row(key, title, description):
-        card = tk.Frame(cards, bg=pal["card"], padx=10, pady=8)
-        card.pack(fill="x", pady=4)
-        text = tk.Frame(card, bg=pal["card"])
-        text.pack(side="left", fill="x", expand=True)
-        tk.Label(text, text=title, font=bold, bg=pal["card"], fg=pal["fg"], anchor="w").pack(fill="x")
-        tk.Label(text, text=description, font=small, bg=pal["card"], fg=pal["fg"], anchor="w",
-                 justify="left", wraplength=380).pack(fill="x")
-        detail = tk.Label(text, text="checking...", font=small, bg=pal["card"], fg="#757575",
-                          anchor="w", justify="left", wraplength=380)
-        detail.pack(fill="x")
-        badge = tk.Label(card, text="…", font=bold, width=17, bg=pal["card"], fg="#757575")
-        badge.pack(side="left", padx=8)
-        button = tk.Button(card, text="Install", width=9, state="disabled", bg=pal["btn"], fg=pal["fg"],
-                           activebackground=AMBER, highlightbackground=pal["card"],
-                           disabledforeground="#ffffff", command=lambda: start([key]))
-        button.pack(side="left")
-        rows[key] = {"badge": badge, "button": button, "detail": detail, "state": None}
+            scroller = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
+            scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroller.set_kinetic_scrolling(True)
+            self.cards = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            scroller.set_child(self.cards)
+            outer.append(scroller)
+            for key, name, description in ROWS:
+                self.make_row(key, name, description)
 
-    for key, title, description in (
-            ("touchscreen", "Touchscreen repair", "Keeps the eGalax touchscreen working (checks every few minutes)."),
-            ("speaker", "Speaker fix", "Unmutes the HDA Intel PCH Headphone/Headset outputs that drive the speaker."),
-            ("gps", "GPS support", "Installs gpsd and the GPS tools and attaches the u-blox receiver."),
-            ("graphics", "Graphics driver", "Detects the GPUs and installs a driver only if Ubuntu recommends one."),
-            ("smartcard", "Smart card / ID card (CAC)", "Installs the smart card service and tools so the ID card reader works."),
-            ("rfid", "RFID / NFC reader", "Adds contactless tag support on top of the smart card service."),
-            ("lte", "4G LTE modem", "Dell Wireless 5808e: enables ModemManager and checks the modem is detected."),
-            ("sdr", "Software-defined radio", "RTL-SDR USB dongle: installs rtl-sdr and the Gqrx receiver."),
-            ("battery", "Battery health", "Shows battery wear (informational; nothing to install)."),
-            ("firmware", "Firmware updates", "Refreshes Dell firmware/BIOS updates (never installs them for you).")):
-        make_row(key, title, description)
+            controls = Gtk.Box(spacing=8)
+            controls.set_homogeneous(False)
+            self.all_button = self.plain_button(controls, "Install everything missing", lambda *_: self.start(
+                [k for k, r in self.rows.items() if r["state"] in ("missing", "partial")]))
+            self.refresh_button = self.plain_button(controls, "Refresh", lambda *_: self.refresh())
+            gps = self.plain_button(controls, "Open GPS Monitor",
+                                    lambda *_: subprocess.Popen(["/usr/bin/dell-gps-monitor"]))
+            gps.set_sensitive(shutil.which("dell-gps-monitor") is not None)
+            self.plain_button(controls, "Close", lambda *_: self.close())
+            outer.append(controls)
 
-    controls = tk.Frame(root, bg=pal["bg"])
-    controls.pack(fill="x", padx=14, pady=8)
+            progress = Gtk.Label(label="Progress", xalign=0)
+            progress.add_css_class("heading")
+            outer.append(progress)
+            self.log = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                    wrap_mode=Gtk.WrapMode.WORD_CHAR)
+            self.log.set_left_margin(6)
+            log_scroll = Gtk.ScrolledWindow(min_content_height=130)
+            log_scroll.set_child(self.log)
+            outer.append(log_scroll)
+            self.log_scroll = log_scroll
 
-    def plain_button(text, command):
-        button = tk.Button(controls, text=text, command=command, bg=pal["btn"], fg=pal["fg"],
-                           activebackground=AMBER, highlightbackground=pal["bg"])
-        button.pack(side="left", padx=(0, 6))
-        return button
+            mark_seen()
+            self.write("Checking what is installed ...")
+            self.refresh()
 
-    all_button = plain_button("Install everything missing", lambda: start(
-        [key for key, row in rows.items() if row["state"] in ("missing", "partial")]))
-    plain_button("Refresh", lambda: refresh())
-    gps_button = plain_button("Open GPS Monitor", lambda: subprocess.Popen(["/usr/bin/dell-gps-monitor"]))
-    gps_button.config(state="normal" if shutil.which("dell-gps-monitor") else "disabled")
-    plain_button("Close", root.destroy)
+        def plain_button(self, box, text, handler):
+            button = Gtk.Button(label=text)
+            button.add_css_class("touch")
+            button.connect("clicked", handler)
+            box.append(button)
+            return button
 
-    tk.Label(root, text="Progress", font=bold, bg=pal["bg"], fg=pal["fg"], anchor="w").pack(fill="x", padx=14)
-    log_frame = tk.Frame(root, bg=pal["bg"])
-    log_frame.pack(fill="x", padx=14, pady=(0, 14))
-    log = tk.Text(log_frame, height=6, font=mono, bg=pal["log"], fg=pal["fg"], relief="flat",
-                  wrap="word", state="disabled", highlightthickness=0)
-    scrollbar = tk.Scrollbar(log_frame, command=log.yview)
-    log.config(yscrollcommand=scrollbar.set)
-    scrollbar.pack(side="right", fill="y")
-    log.pack(fill="both", expand=True)
+        def make_row(self, key, name, description):
+            card = Gtk.Box(spacing=10)
+            card.add_css_class("card")
+            text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
+            title = Gtk.Label(xalign=0)
+            title.set_markup(f"<b>{GLib.markup_escape_text(name)}</b>")
+            desc = Gtk.Label(label=description, xalign=0, wrap=True)
+            desc.add_css_class("dim")
+            detail = Gtk.Label(label="checking...", xalign=0, wrap=True)
+            detail.add_css_class("dim")
+            for widget in (title, desc, detail):
+                text.append(widget)
+            badge = Gtk.Label(label="…", width_chars=15)
+            badge.set_valign(Gtk.Align.CENTER)
+            button = Gtk.Button(label="Install", sensitive=False)
+            button.add_css_class("touch")
+            button.add_css_class("wide")
+            button.set_valign(Gtk.Align.CENTER)
+            button.connect("clicked", lambda *_: self.start([key]))
+            for widget in (text, badge, button):
+                card.append(widget)
+            self.cards.append(card)
+            self.rows[key] = {"badge": badge, "button": button, "detail": detail, "state": None,
+                              "badge_class": None, "button_class": None}
 
-    def write(text):
-        log.config(state="normal")
-        log.insert("end", text.rstrip("\n") + "\n")
-        log.see("end")
-        log.config(state="disabled")
+        def style(self, row, badge_colour, button_colour):
+            for widget, field, prefix, colour in (
+                    (row["badge"], "badge_class", "badge-", badge_colour),
+                    (row["button"], "button_class", "state-", button_colour)):
+                if row[field]:
+                    widget.remove_css_class(row[field])
+                row[field] = prefix + colour
+                widget.add_css_class(row[field])
 
-    def set_buttons(enabled):
-        for row in rows.values():
-            row["button"].config(state="normal" if enabled else "disabled")
-        all_button.config(state="normal" if enabled else "disabled")
+        def write(self, text):
+            buffer = self.log.get_buffer()
+            buffer.insert(buffer.get_end_iter(), text.rstrip("\n") + "\n")
+            mark = buffer.create_mark(None, buffer.get_end_iter(), False)
+            self.log.scroll_mark_onscreen(mark)
+            buffer.delete_mark(mark)
+            return False
 
-    def render(items):
-        for item in items:
-            row = rows[item["id"]]
-            row["state"] = item["state"]
-            state = item["state"]
-            if item["id"] in failed and state != "installed":
-                state = "partial"
-            badge, colour, action = STATES[state]
-            row["badge"].config(text=badge, fg=colour)
-            row["detail"].config(text=item["detail"])
-            row["button"].config(text=action, bg=colour, fg="#ffffff", activebackground=colour)
-        set_buttons(True)
+        def set_buttons(self, enabled):
+            for row in self.rows.values():
+                row["button"].set_sensitive(enabled)
+            self.all_button.set_sensitive(enabled)
+            return False
 
-    def refresh():
-        set_buttons(False)
+        def render(self, items):
+            for item in items:
+                row = self.rows[item["id"]]
+                row["state"] = item["state"]
+                state = item["state"]
+                if item["id"] in self.failed and state != "installed":
+                    state = "partial"
+                badge, colour, action = STATES[state]
+                row["badge"].set_label(badge)
+                row["detail"].set_label(item["detail"])
+                row["button"].set_label(action)
+                self.style(row, COLOUR_NAME[colour], COLOUR_NAME[colour])
+            self.set_buttons(True)
+            return False
 
-        def work():
-            try:
-                events.put(("status", load_status()))
-            except (OSError, ValueError, subprocess.SubprocessError) as error:
-                events.put(("error", f"Could not read status: {error}"))
-        threading.Thread(target=work, daemon=True).start()
+        def refresh(self):
+            self.set_buttons(False)
 
-    def run_next():
-        if not busy["queue"]:
-            busy["id"] = None
-            write("Done.")
-            refresh()
-            return
-        key = busy["queue"].pop(0)
-        busy["id"] = key
-        rows[key]["badge"].config(text="⟳ Installing...", fg=AMBER)
-        rows[key]["button"].config(bg=AMBER, fg="#000000", text="Working...")
-        write(f"--- {key} ---")
+            def work():
+                try:
+                    items = load_status()
+                    GLib.idle_add(self.render, items)
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    GLib.idle_add(self.write, f"Could not read status: {error}")
+                    GLib.idle_add(self.set_buttons, True)
+            threading.Thread(target=work, daemon=True).start()
 
-        def work():
-            try:
-                process = subprocess.Popen(install_command(key), stdout=subprocess.PIPE,
-                                           stderr=subprocess.STDOUT, text=True)
-                for line in process.stdout:
-                    events.put(("log", line))
-                code = process.wait()
-                if code in (126, 127):
-                    events.put(("log", "Administrator authentication was cancelled or unavailable."))
-                elif code:
-                    events.put(("log", f"Finished with exit code {code}."))
-                if code:
-                    events.put(("failed", key))
-                else:
-                    events.put(("ok", key))
-            except OSError as error:
-                events.put(("log", f"Could not start: {error}"))
-            events.put(("next", None))
-        threading.Thread(target=work, daemon=True).start()
+        def run_next(self):
+            if not self.queue:
+                self.busy = None
+                self.write("Done.")
+                self.refresh()
+                return False
+            key = self.queue.pop(0)
+            self.busy = key
+            row = self.rows[key]
+            row["badge"].set_label("⟳ Installing...")
+            row["button"].set_label("Working...")
+            self.style(row, "amber", "amber")
+            self.write(f"--- {key} ---")
 
-    def start(keys):
-        if busy["id"] is not None or not keys:
-            return
-        set_buttons(False)
-        busy["queue"] = list(keys)
-        run_next()
+            def work():
+                try:
+                    process = subprocess.Popen(install_command(key), stdout=subprocess.PIPE,
+                                               stderr=subprocess.STDOUT, text=True)
+                    for line in process.stdout:
+                        GLib.idle_add(self.write, line)
+                    code = process.wait()
+                    if code in (126, 127):
+                        GLib.idle_add(self.write, "Administrator authentication was cancelled or unavailable.")
+                    elif code:
+                        GLib.idle_add(self.write, f"Finished with exit code {code}.")
+                    GLib.idle_add(self.failed.add if code else self.failed.discard, key)
+                except OSError as error:
+                    GLib.idle_add(self.write, f"Could not start: {error}")
+                GLib.idle_add(self.run_next)
+            threading.Thread(target=work, daemon=True).start()
+            return False
 
-    def pump():
-        try:
-            while True:
-                kind, payload = events.get_nowait()
-                if kind == "status":
-                    render(payload)
-                elif kind == "log":
-                    write(payload)
-                elif kind == "error":
-                    write(payload)
-                    set_buttons(True)
-                elif kind == "failed":
-                    failed.add(payload)
-                elif kind == "ok":
-                    failed.discard(payload)
-                elif kind == "next":
-                    run_next()
-        except queue.Empty:
-            pass
-        root.after(150, pump)
+        def start(self, keys):
+            if self.busy is not None or not keys:
+                return
+            self.set_buttons(False)
+            self.queue = list(keys)
+            self.run_next()
 
-    mark_seen()
-    write("Checking what is installed ...")
-    pump()
-    refresh()
-    root.mainloop()
+    def on_activate(app):
+        provider = Gtk.CssProvider()
+        provider.load_from_data(build_css().encode())
+        from gi.repository import Gdk
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        SetupWindow(app).present()
+
+    app = Gtk.Application()
+    app.connect("activate", on_activate)
+    return app.run([sys.argv[0]])
 
 
 def main():
     if "--first-run" in sys.argv and os.path.exists(MARKER):
         return 0
-    run_app()
-    return 0
+    return run_app()
 
 
 if __name__ == "__main__":

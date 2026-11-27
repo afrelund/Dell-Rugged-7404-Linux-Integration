@@ -415,6 +415,7 @@ def run_app():
         threading.Thread(target=target, args=(state, stop), daemon=True).start()
 
     root = tk.Tk(className="dell-gps-monitor")
+    root.option_add("*Button.padY", 8)
     root.title("Dell Rugged GPS Monitor")
     root.geometry("1180x720")
     theme = {"dark": system_is_dark()}
@@ -472,9 +473,11 @@ def run_app():
 
     for name in TABS:
         pages[name] = tk.Frame(container)
-        tab_buttons[name] = tk.Button(tabbar, text=name, font=small, padx=6,
+        tab_buttons[name] = tk.Button(tabbar, text=name, font=bold, padx=6, pady=12,
                                       command=lambda n=name: show(n))
-        tab_buttons[name].pack(side="left", padx=1)
+        # Touch screens can jitter between press and release, which cancels a normal click.
+        tab_buttons[name].bind("<ButtonPress-1>", lambda e, n=name: show(n))
+        tab_buttons[name].pack(side="left", fill="x", expand=True, padx=2)
 
     # ----- LIVE tab -----
     live = pages["LIVE"]

@@ -848,7 +848,7 @@ def run_app():
     import gi
     gi.require_version("Gtk", "4.0")
     gi.require_version("Gdk", "4.0")
-    from gi.repository import Gdk, GLib, Gtk
+    from gi.repository import Gdk, GLib, Gtk, Pango
 
     state, stop = GpsState(), threading.Event()
     for target in (gpsd_reader, hw_poller):
@@ -1775,14 +1775,20 @@ def run_app():
                 heading.set_margin_top(8)
                 box.append(heading)
                 continue
-            box.append(label(f"{name}:", "row-title"))
-            value_button = Gtk.Button(has_frame=False)
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            title = label(f"{name}:", "row-title")
+            title.set_size_request(225, -1)
+            title.set_valign(Gtk.Align.CENTER)
+            row.append(title)
+            value_button = Gtk.Button(has_frame=False, hexpand=True)
             value_button.add_css_class("value-button")
             value_button.add_css_class("flat")
-            value_label = label(f"  {value}", "mono")
+            value_label = label(value, "mono", wrap=True)
+            value_label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
             value_button.set_child(value_label)
             value_button.connect("clicked", lambda _b, v=value: copy_text(v))
-            box.append(value_button)
+            row.append(value_button)
+            box.append(row)
 
     # ----- refresh loop -----
     def refresh():

@@ -663,21 +663,59 @@ def router_command(folder, lat1, lon1, lat2, lon2, output):
 
 
 def snap_to_road(folder, lat, lon, work):
-    """Return (lat, lon, metres) of the nearest drivable point, since routino only snaps within ~1 km."""
-    def drivable(la, lo):
-        result = subprocess.run(router_command(folder, la, lo, la, lo, "--output-none"),
-                                capture_output=True, text=True, cwd=work)
-        return result.returncode == 0
-    if drivable(lat, lon):
-        return lat, lon, 0.0
-    for radius in SNAP_RADII_KM:
-        for step in range(16):
-            angle = math.radians(step * 22.5)
-            la = lat + math.cos(angle) * radius / 111.32
-            lo = lon + math.sin(angle) * radius / (111.32 * max(math.cos(math.radians(lat)), 0.01))
-            if drivable(la, lo):
-                return la, lo, radius * 1000.0
-    raise RouteError("No drivable road within 50 km of that point in the downloaded areas.")
+    """Return (road_lat, road_lon, metres) for the drivable point nearest (lat, lon).
+
+    Routino only snaps within about 1 km, so probe outward for any road, then keep probing
+    closer rings around the original point until no probe finds a nearer road point.
+    """
+    cache = {}
+
+    def probe(la, lo):
+        key = (round(la, 6), round(lo, 6))
+        if key not in cache:
+            point = None
+            result = subprocess.run(router_command(folder, la, lo, la, lo, "--output-text-all"),
+                                    capture_output=True, text=True, cwd=work)
+            if result.returncode == 0:
+                try:
+                    with open(os.path.join(work, "quickest-all.txt")) as handle:
+                        found = parse_route_text(handle.read())
+                    point = (found[0]["lat"], found[0]["lon"])
+                except (OSError, IndexError, KeyError):
+                    point = None
+            cache[key] = point
+        return cache[key]
+
+    def around(radius_m, steps):
+        for step in range(steps):
+            angle = math.radians(step * 360.0 / steps)
+            yield (lat + math.cos(angle) * radius_m / 111320.0,
+                   lon + math.sin(angle) * radius_m / (111320.0 * max(math.cos(math.radians(lat)), 0.01)))
+
+    best = probe(lat, lon)
+    if best is None:
+        for radius in SNAP_RADII_KM:
+            for la, lo in around(radius * 1000.0, 16):
+                best = probe(la, lo)
+                if best:
+                    break
+            if best:
+                break
+    if best is None:
+        raise RouteError("No drivable road within 50 km of that point in the downloaded areas.")
+    best_distance = bearing_distance(lat, lon, *best)[0]
+    for _ in range(5):
+        improved = False
+        for fraction in (0.15, 0.3, 0.5, 0.7, 0.85, 1.0):
+            for la, lo in around(best_distance * fraction, 24):
+                candidate = probe(la, lo)
+                if candidate:
+                    distance = bearing_distance(lat, lon, *candidate)[0]
+                    if distance < best_distance - 1.0:
+                        best, best_distance, improved = candidate, distance, True
+        if not improved:
+            break
+    return best[0], best[1], best_distance if best_distance > 5 else 0.0
 
 
 def compute_route(lat1, lon1, lat2, lon2):
@@ -698,12 +736,13 @@ def compute_route(lat1, lon1, lat2, lon2):
     steps = route_steps(points)
     notes = []
     if start[2]:
-        notes.append(f"You are about {start[2] / 1000:.1f} km from the nearest road; the route starts there.")
+        notes.append(f"You are {format_distance(start[2])} from the nearest road (dashed line on the map).")
     if end[2]:
-        notes.append(f"The destination is about {end[2] / 1000:.1f} km from the nearest road; "
-                     "the route ends there and the rest is off-road.")
+        notes.append(f"The road ends {format_distance(end[2])} from the destination; "
+                     "the rest is off-road (dashed line on the map).")
     return {"points": points, "km": points[-1]["total_km"], "minutes": points[-1]["total_min"],
-            "steps": steps, "notes": notes, "ends": ((lat1, lon1), (lat2, lon2))}
+            "steps": steps, "notes": notes, "ends": ((lat1, lon1), (lat2, lon2)),
+            "snapped": ((start[0], start[1]), (end[0], end[1]))}
 
 
 def system_is_dark():
@@ -1183,11 +1222,20 @@ def run_app():
             route_layer.set_stroke_width(6)
             route_layer.set_stroke_color(Gdk.RGBA(red=0.1, green=0.5, blue=1.0, alpha=0.9))
             simple.add_overlay_layer(route_layer)
+            off_road_layers = []
+            for _ in range(2):
+                layer = Shumate.PathLayer.new(viewport)
+                layer.set_stroke_width(4)
+                layer.set_stroke_color(Gdk.RGBA(red=0.1, green=0.5, blue=1.0, alpha=0.9))
+                layer.set_dash([6, 6])
+                simple.add_overlay_layer(layer)
+                off_road_layers.append(layer)
             nav["route"] = None
 
             def clear_route():
-                for node in list(route_layer.get_nodes()):
-                    route_layer.remove_node(node)
+                for layer in [route_layer] + off_road_layers:
+                    for node in list(layer.get_nodes()):
+                        layer.remove_node(node)
                 nav["route"] = None
                 ui["route_button"].set_label("Route to target")
 
@@ -1304,10 +1352,11 @@ def run_app():
                         message_dialog("Route", error)
                         return False
                     nav["route"] = result
-                    path = [(p["lat"], p["lon"]) for p in result["points"]]
-                    path = [result["ends"][0]] + path + [result["ends"][1]]
-                    for lat, lon in path:
+                    for lat, lon in [(p["lat"], p["lon"]) for p in result["points"]]:
                         route_layer.add_node(Shumate.Coordinate.new_full(lat, lon))
+                    for layer, outer, road in zip(off_road_layers, result["ends"], result["snapped"]):
+                        for lat, lon in (outer, road):
+                            layer.add_node(Shumate.Coordinate.new_full(lat, lon))
                     ui["route_button"].set_label("Clear route")
                     ui["route_note"].set_label(f"{result['km']:.1f} km · {format_duration(result['minutes'])}")
                     show_directions(result)

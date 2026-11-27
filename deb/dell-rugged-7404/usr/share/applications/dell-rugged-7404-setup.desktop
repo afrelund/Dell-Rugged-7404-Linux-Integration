@@ -1,8 +1,9 @@
 [Desktop Entry]
 Type=Application
 Name=Dell Rugged 7404 Setup
-Comment=Click to install the touchscreen, speaker, GPS and graphics fixes
+Comment=Click to install the touchscreen, speaker, GPS, smart card, RFID and other fixes
 Exec=/usr/bin/dell-rugged-7404-setup
-Icon=dell-gps-monitor
+Icon=dell-rugged-7404-setup
 Categories=Settings;HardwareSettings;
 Terminal=false
+StartupWMClass=dell-rugged-7404-setup

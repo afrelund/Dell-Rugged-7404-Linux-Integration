@@ -17,7 +17,7 @@ MARKER = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.c
                       "dell-rugged-7404", "setup-seen")
 GREEN, ORANGE, RED = "#2e7d32", "#ef6c00", "#c62828"
 STATES = {  # state -> (badge text, colour, button text)
-    "installed": ("● Installed", GREEN, "Installed ✓"),
+    "installed": ("● Working", GREEN, "Working ✓"),
     "partial": ("● Error", ORANGE, "Fix"),
     "missing": ("● Not installed", RED, "Install"),
 }
@@ -65,7 +65,7 @@ def run_app():
 
     root = tk.Tk(className="dell-rugged-7404-setup")
     root.title("Dell Rugged 7404 Setup")
-    root.geometry("700x640")
+    root.geometry("720x700")
     pal = dict(DARK if system_is_dark() else LIGHT)
     title_font = tkfont.Font(family="DejaVu Sans", size=15, weight="bold")
     bold = tkfont.Font(family="DejaVu Sans", size=11, weight="bold")
@@ -83,8 +83,20 @@ def run_app():
     tk.Label(root, text="Click Install next to anything you want. Nothing changes until you click.",
              font=normal, bg=pal["bg"], fg=pal["fg"], anchor="w").pack(fill="x", padx=14, pady=(0, 8))
 
-    cards = tk.Frame(root, bg=pal["bg"])
-    cards.pack(fill="x", padx=14)
+    holder = tk.Frame(root, bg=pal["bg"])
+    holder.pack(fill="both", expand=True, padx=14)
+    canvas = tk.Canvas(holder, bg=pal["bg"], highlightthickness=0, height=330)
+    list_bar = tk.Scrollbar(holder, command=canvas.yview)
+    canvas.configure(yscrollcommand=list_bar.set)
+    list_bar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+    cards = tk.Frame(canvas, bg=pal["bg"])
+    window = canvas.create_window((0, 0), window=cards, anchor="nw")
+    cards.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+    for event, step in (("<Button-4>", -1), ("<Button-5>", 1)):
+        root.bind_all(event, lambda e, step=step: canvas.yview_scroll(step * 2, "units"))
+    root.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-2 if e.delta > 0 else 2, "units"))
 
     def make_row(key, title, description):
         card = tk.Frame(cards, bg=pal["card"], padx=10, pady=8)
@@ -93,9 +105,9 @@ def run_app():
         text.pack(side="left", fill="x", expand=True)
         tk.Label(text, text=title, font=bold, bg=pal["card"], fg=pal["fg"], anchor="w").pack(fill="x")
         tk.Label(text, text=description, font=small, bg=pal["card"], fg=pal["fg"], anchor="w",
-                 justify="left", wraplength=360).pack(fill="x")
+                 justify="left", wraplength=380).pack(fill="x")
         detail = tk.Label(text, text="checking...", font=small, bg=pal["card"], fg="#757575",
-                          anchor="w", justify="left", wraplength=360)
+                          anchor="w", justify="left", wraplength=380)
         detail.pack(fill="x")
         badge = tk.Label(card, text="…", font=bold, width=17, bg=pal["card"], fg="#757575")
         badge.pack(side="left", padx=8)
@@ -109,7 +121,13 @@ def run_app():
             ("touchscreen", "Touchscreen repair", "Keeps the eGalax touchscreen working (checks every few minutes)."),
             ("speaker", "Speaker fix", "Unmutes the HDA Intel PCH Headphone/Headset outputs that drive the speaker."),
             ("gps", "GPS support", "Installs gpsd and the GPS tools and attaches the u-blox receiver."),
-            ("graphics", "Graphics driver", "Detects the GPUs and installs a driver only if Ubuntu recommends one.")):
+            ("graphics", "Graphics driver", "Detects the GPUs and installs a driver only if Ubuntu recommends one."),
+            ("smartcard", "Smart card / ID card (CAC)", "Installs the smart card service and tools so the ID card reader works."),
+            ("rfid", "RFID / NFC reader", "Adds contactless tag support on top of the smart card service."),
+            ("lte", "4G LTE modem", "Dell Wireless 5808e: enables ModemManager and checks the modem is detected."),
+            ("sdr", "Software-defined radio", "RTL-SDR USB dongle: installs rtl-sdr and the Gqrx receiver."),
+            ("battery", "Battery health", "Shows battery wear (informational; nothing to install)."),
+            ("firmware", "Firmware updates", "Refreshes Dell firmware/BIOS updates (never installs them for you).")):
         make_row(key, title, description)
 
     controls = tk.Frame(root, bg=pal["bg"])
@@ -130,8 +148,8 @@ def run_app():
 
     tk.Label(root, text="Progress", font=bold, bg=pal["bg"], fg=pal["fg"], anchor="w").pack(fill="x", padx=14)
     log_frame = tk.Frame(root, bg=pal["bg"])
-    log_frame.pack(fill="both", expand=True, padx=14, pady=(0, 14))
-    log = tk.Text(log_frame, height=10, font=mono, bg=pal["log"], fg=pal["fg"], relief="flat",
+    log_frame.pack(fill="x", padx=14, pady=(0, 14))
+    log = tk.Text(log_frame, height=6, font=mono, bg=pal["log"], fg=pal["fg"], relief="flat",
                   wrap="word", state="disabled", highlightthickness=0)
     scrollbar = tk.Scrollbar(log_frame, command=log.yview)
     log.config(yscrollcommand=scrollbar.set)

@@ -654,15 +654,15 @@ def format_duration(minutes):
 SNAP_RADII_KM = (0.5, 1, 2, 3, 5, 8, 12, 20, 30, 50)
 
 
-def router_command(folder, lat1, lon1, lat2, lon2, output):
+def router_command(folder, lat1, lon1, lat2, lon2, output, transport="motorcar"):
     return ["routino-router", f"--dir={folder}", "--prefix=routing",
             f"--profiles={ROUTINO_SHARE}/profiles.xml",
-            f"--translations={ROUTINO_SHARE}/translations.xml", "--transport=motorcar",
+            f"--translations={ROUTINO_SHARE}/translations.xml", f"--transport={transport}",
             "--quickest", f"--lat1={lat1}", f"--lon1={lon1}", f"--lat2={lat2}", f"--lon2={lon2}",
             output, "--quiet"]
 
 
-def snap_to_road(folder, lat, lon, work):
+def snap_to_road(folder, lat, lon, work, transport="motorcar"):
     """Return (road_lat, road_lon, metres) for the drivable point nearest (lat, lon).
 
     Routino only snaps within about 1 km, so probe outward for any road, then keep probing
@@ -674,7 +674,7 @@ def snap_to_road(folder, lat, lon, work):
         key = (round(la, 6), round(lo, 6))
         if key not in cache:
             point = None
-            result = subprocess.run(router_command(folder, la, lo, la, lo, "--output-text-all"),
+            result = subprocess.run(router_command(folder, la, lo, la, lo, "--output-text-all", transport),
                                     capture_output=True, text=True, cwd=work)
             if result.returncode == 0:
                 try:
@@ -718,6 +718,23 @@ def snap_to_road(folder, lat, lon, work):
     return best[0], best[1], best_distance if best_distance > 5 else 0.0
 
 
+def trail_to(folder, work, road, outer):
+    """Points from a road point out to (and ending at) the target, following trails when they get closer."""
+    gap = bearing_distance(*road, *outer)[0]
+    try:
+        trail = snap_to_road(folder, outer[0], outer[1], work, "foot")
+        if trail[2] < gap - 50:
+            run_tool(router_command(folder, road[0], road[1], trail[0], trail[1], "--output-text-all", "foot"),
+                     cwd=work)
+            with open(os.path.join(work, "quickest-all.txt")) as handle:
+                found = parse_route_text(handle.read())
+            if len(found) > 1:
+                return [(p["lat"], p["lon"]) for p in found] + [outer], found[-1]["total_km"], trail[2]
+    except (RouteError, OSError):
+        pass
+    return [road, outer], 0.0, gap
+
+
 def compute_route(lat1, lon1, lat2, lon2):
     folder = os.path.join(MAPS_DIR, "routing")
     if not os.path.exists(os.path.join(folder, "routing-nodes.mem")):
@@ -731,18 +748,25 @@ def compute_route(lat1, lon1, lat2, lon2):
         run_tool(router_command(folder, start[0], start[1], end[0], end[1], "--output-text-all"), cwd=work)
         with open(os.path.join(work, "quickest-all.txt")) as handle:
             points = parse_route_text(handle.read())
-    if len(points) < 2:
-        raise RouteError("No route found.")
+        if len(points) < 2:
+            raise RouteError("No route found.")
+        start_path = end_path = []
+        notes = []
+        if start[2]:
+            path, trail_km, left = trail_to(folder, work, (start[0], start[1]), (lat1, lon1))
+            start_path = path[::-1]
+            notes.append(f"You are {format_distance(start[2])} from the nearest road; "
+                         + (f"a {trail_km:.1f} km trail/path gets you there (dashed red/purple)."
+                            if trail_km else "the straight dashed line is off-road."))
+        if end[2]:
+            end_path, trail_km, left = trail_to(folder, work, (end[0], end[1]), (lat2, lon2))
+            notes.append(f"The road ends {format_distance(end[2])} from the destination. "
+                         + (f"A {trail_km:.1f} km trail/path continues to within {format_distance(left)}; "
+                            "the rest is off-road (dashed red/purple)."
+                            if trail_km else "The rest is off-road (dashed red/purple)."))
     steps = route_steps(points)
-    notes = []
-    if start[2]:
-        notes.append(f"You are {format_distance(start[2])} from the nearest road (dashed line on the map).")
-    if end[2]:
-        notes.append(f"The road ends {format_distance(end[2])} from the destination; "
-                     "the rest is off-road (dashed line on the map).")
     return {"points": points, "km": points[-1]["total_km"], "minutes": points[-1]["total_min"],
-            "steps": steps, "notes": notes, "ends": ((lat1, lon1), (lat2, lon2)),
-            "snapped": ((start[0], start[1]), (end[0], end[1]))}
+            "steps": steps, "notes": notes, "off_road": (start_path, end_path)}
 
 
 def system_is_dark():
@@ -1223,17 +1247,22 @@ def run_app():
             route_layer.set_stroke_color(Gdk.RGBA(red=0.1, green=0.5, blue=1.0, alpha=0.9))
             simple.add_overlay_layer(route_layer)
             off_road_layers = []
+            # Red and purple dashes alternate: the purple pattern is shifted by half a period.
             for _ in range(2):
-                layer = Shumate.PathLayer.new(viewport)
-                layer.set_stroke_width(4)
-                layer.set_stroke_color(Gdk.RGBA(red=0.1, green=0.5, blue=1.0, alpha=0.9))
-                layer.set_dash([6, 6])
-                simple.add_overlay_layer(layer)
-                off_road_layers.append(layer)
+                pair = []
+                for color, dash in ((Gdk.RGBA(red=0.9, green=0.1, blue=0.1, alpha=1), [8, 8]),
+                                    (Gdk.RGBA(red=0.6, green=0.2, blue=0.85, alpha=1), [0, 8, 8, 0])):
+                    layer = Shumate.PathLayer.new(viewport)
+                    layer.set_stroke_width(5)
+                    layer.set_stroke_color(color)
+                    layer.set_dash(dash)
+                    simple.add_overlay_layer(layer)
+                    pair.append(layer)
+                off_road_layers.append(pair)
             nav["route"] = None
 
             def clear_route():
-                for layer in [route_layer] + off_road_layers:
+                for layer in [route_layer] + [x for pair in off_road_layers for x in pair]:
                     for node in list(layer.get_nodes()):
                         layer.remove_node(node)
                 nav["route"] = None
@@ -1354,9 +1383,10 @@ def run_app():
                     nav["route"] = result
                     for lat, lon in [(p["lat"], p["lon"]) for p in result["points"]]:
                         route_layer.add_node(Shumate.Coordinate.new_full(lat, lon))
-                    for layer, outer, road in zip(off_road_layers, result["ends"], result["snapped"]):
-                        for lat, lon in (outer, road):
-                            layer.add_node(Shumate.Coordinate.new_full(lat, lon))
+                    for pair, path in zip(off_road_layers, result["off_road"]):
+                        for layer in pair:
+                            for lat, lon in path:
+                                layer.add_node(Shumate.Coordinate.new_full(lat, lon))
                     ui["route_button"].set_label("Clear route")
                     ui["route_note"].set_label(f"{result['km']:.1f} km · {format_duration(result['minutes'])}")
                     show_directions(result)

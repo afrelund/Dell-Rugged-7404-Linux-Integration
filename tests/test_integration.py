@@ -22,6 +22,7 @@ def load(name, path):
 audio = load("audio", ROOT / "files/dell-speaker-check")
 touch = load("touch", ROOT / "files/egalax-touchscreen-check")
 installer = load("installer", ROOT / "install.py")
+gps = load("gps", ROOT / "deb/dell-rugged-7404/usr/bin/dell-gps-monitor")
 SWITCH_OFF = " : values=off,off\n"
 SWITCH_ON = " : values=on,on\n"
 VOLUME = "  ; type=INTEGER,min=0,max=87,step=0\n  : values=12,14\n"
@@ -98,6 +99,31 @@ class CardDiscoveryTests(unittest.TestCase):
                     "numid=3,iface=MIXER,name='Master Playback Switch'\n")
         with patch.object(audio, "amixer", return_value=controls):
             self.assertEqual(len(audio.switches()), 2)
+
+
+class GpsMonitorTests(unittest.TestCase):
+    def test_mgrs_known_points(self):
+        self.assertEqual(gps.to_mgrs(0.0, 0.0), "31N AA 66021 00000")
+        self.assertTrue(gps.to_mgrs(38.8895, -77.0353).startswith("18S UJ 234"))
+
+    def test_utm_southern_hemisphere_and_zone_exceptions(self):
+        zone, hemisphere, _, northing = gps.to_utm(-33.8568, 151.2153)
+        self.assertEqual((zone, hemisphere), (56, "S"))
+        self.assertGreater(northing, 6000000)
+        self.assertEqual(gps.utm_zone(60.0, 5.0), 32)
+
+    def test_degree_formats_round_without_overflow(self):
+        self.assertEqual(gps.dms(10.99999999, "N", "S"), "11°00'00.00\"N")
+        self.assertEqual(gps.ddm(-109.5, "E", "W"), "109°30.0000'W")
+
+    def test_gps_time_is_ahead_of_utc(self):
+        lines = dict(gps.time_lines(gps.parse_gps_utc("2026-11-27T16:24:33.000Z")))
+        self.assertTrue(lines["GPS time"].startswith("2026-11-27 16:24:51"))
+
+    def test_mon_hw_parsing(self):
+        parsed = gps.parse_mon_hw("aStatus 2 aPower 1 flags x5 reserved1 1\n jamInd 77 reserved2")
+        self.assertEqual((parsed["jam"], parsed["antenna"], parsed["jam_state"]), (77, "OK", "OK"))
+        self.assertEqual(gps.jam_level(150)[0], "STRONG interference")
 
 
 class TouchSafetyTests(unittest.TestCase):

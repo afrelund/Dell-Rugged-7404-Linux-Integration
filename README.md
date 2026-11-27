@@ -16,13 +16,17 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
 2. Install it:
 
    ```sh
-   sudo apt install ./dell-rugged-7404_1.5.1_all.deb
+   sudo apt install ./dell-rugged-7404_1.6.0_all.deb
    ```
 
 3. Nothing is enabled automatically. Open **Dell Rugged 7404 Setup** from the app menu
    (it also opens once at your next login) and click **Install** next to the touchscreen
    repair, speaker fix, GPS support or graphics check. Each row shows whether it is
    installed; administrator steps ask for your password.
+   The Setup window covers: touchscreen repair, speaker fix, GPS support, graphics driver,
+   smart card / ID card (CAC), RFID / NFC reader, 4G LTE modem, software-defined radio (RTL-SDR),
+   battery health and firmware updates. Buttons are **red** (not installed), **orange**
+   (error / needs attention) and **green** (installed and working).
 4. Lower the volume, then test sound from the built-in speaker. Check status with:
 
    ```sh

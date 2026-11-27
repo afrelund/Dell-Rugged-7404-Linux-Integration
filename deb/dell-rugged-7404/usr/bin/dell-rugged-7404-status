@@ -8,6 +8,7 @@
   dell-rugged-7404-status --apply ID install one component: touchscreen, speaker, gps or graphics
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -70,7 +71,111 @@ COMPONENTS = (
     ("speaker", "Speaker fix", "Unmutes the HDA Intel PCH Headphone/Headset outputs that drive the speaker."),
     ("gps", "GPS support", "Installs gpsd and the GPS tools and attaches the u-blox receiver."),
     ("graphics", "Graphics driver", "Detects the GPUs and installs a driver only if Ubuntu recommends one."),
+    ("smartcard", "Smart card / ID card (CAC)", "Installs the smart card service and tools so the ID card reader works."),
+    ("rfid", "RFID / NFC reader", "Adds contactless tag support on top of the smart card service."),
+    ("lte", "4G LTE modem", "Dell Wireless 5808e: enables ModemManager and checks the modem is detected."),
+    ("sdr", "Software-defined radio", "RTL-SDR USB dongle: installs rtl-sdr and the Gqrx receiver."),
+    ("battery", "Battery health", "Shows battery wear (informational; nothing to install)."),
+    ("firmware", "Firmware updates", "Refreshes Dell firmware/BIOS updates from the LVFS (never installs them for you)."),
 )
+
+APT_GROUPS = {
+    "smartcard": ["pcscd", "libccid", "opensc", "pcsc-tools"],
+    "rfid": ["pcscd", "libccid", "libnfc-bin", "libacsccid1"],
+    "lte": ["modemmanager", "mobile-broadband-provider-info"],
+    "sdr": ["rtl-sdr", "gqrx-sdr"],
+}
+
+
+def missing_packages(key):
+    return [p for p in APT_GROUPS[key] if not installed(p)]
+
+
+def card_readers():
+    if not shutil.which("opensc-tool"):
+        return []
+    out = run("opensc-tool", "-l", timeout=10)[1]
+    return [l.split(None, 2)[2] if len(l.split(None, 2)) > 2 else l for l in out.splitlines()
+            if re.match(r"^\s*\d+\s", l)]
+
+
+def component_smartcard():
+    missing = missing_packages("smartcard")
+    if missing:
+        return "missing", "not installed: " + ", ".join(missing)
+    if run("systemctl", "is-active", "pcscd.socket")[1] != "active":
+        return "missing", "smart card service (pcscd) is not running"
+    readers = card_readers()
+    if not readers:
+        return "partial", "service running but no card reader was detected"
+    return "installed", f"{len(readers)} reader(s): " + "; ".join(readers)
+
+
+def component_rfid():
+    missing = missing_packages("rfid")
+    if missing:
+        return "missing", "not installed: " + ", ".join(missing)
+    if run("systemctl", "is-active", "pcscd.socket")[1] != "active":
+        return "missing", "smart card service (pcscd) is not running"
+    contactless = [r for r in card_readers() if re.search(r"contactless|nfc|rfid|\bCL\b", r, re.I)]
+    if not contactless:
+        return "partial", "service running but no contactless reader was detected"
+    return "installed", "; ".join(contactless)
+
+
+def component_lte():
+    if missing_packages("lte"):
+        return "missing", "ModemManager is not installed"
+    if run("systemctl", "is-active", "ModemManager")[1] != "active":
+        return "missing", "ModemManager is not running"
+    out = run("mmcli", "-L")[1] if shutil.which("mmcli") else ""
+    match = re.search(r"\]\s+(.+)$", out, re.M)
+    if match:
+        return "installed", f"modem detected: {match.group(1).strip()}"
+    return "partial", "ModemManager running but no modem was detected"
+
+
+def component_sdr():
+    if missing_packages("sdr"):
+        return "missing", "not installed: " + ", ".join(missing_packages("sdr"))
+    if "0bda:2838" not in run("lsusb")[1].lower():
+        return "partial", "tools installed but no RTL-SDR dongle is plugged in"
+    return "installed", "RTL2838 dongle detected, tools installed"
+
+
+def component_battery():
+    base = "/sys/class/power_supply/BAT0"
+    for prefix in ("energy", "charge"):
+        try:
+            full = int(open(f"{base}/{prefix}_full").read())
+            design = int(open(f"{base}/{prefix}_full_design").read())
+            break
+        except (OSError, ValueError):
+            continue
+    else:
+        return "partial", "battery information is not available"
+    health = round(100 * full / design)
+    if health >= 80:
+        return "installed", f"battery health {health}% of design capacity"
+    return "partial", f"battery health {health}% of design capacity: worn, consider replacing"
+
+
+def component_firmware():
+    if not shutil.which("fwupdmgr"):
+        return "missing", "fwupd is not installed"
+    try:
+        result = subprocess.run(["fwupdmgr", "get-updates", "--no-metadata-check"],
+                                capture_output=True, text=True, timeout=30)
+        out = result.stdout + result.stderr
+    except (OSError, subprocess.SubprocessError):
+        return "partial", "could not query fwupd"
+    if "capsule updates not available" in out.lower():
+        return "partial", "UEFI capsule updates are disabled in the BIOS setup, so BIOS updates can't be installed from Linux"
+    if "Devices with no available firmware updates" in out and "Upgrade available" not in out:
+        return "installed", "no firmware updates available"
+    if "Upgrade available" in out:
+        return "partial", "firmware updates are available (run: fwupdmgr update)"
+    return "installed", "no firmware updates reported"
 
 
 def component_touchscreen():
@@ -116,10 +221,17 @@ def component_graphics():
 
 def components():
     checks = {"touchscreen": component_touchscreen, "speaker": component_speaker,
-              "gps": component_gps, "graphics": component_graphics}
+              "gps": component_gps, "graphics": component_graphics,
+              "smartcard": component_smartcard, "rfid": component_rfid, "lte": component_lte,
+              "sdr": component_sdr, "battery": component_battery, "firmware": component_firmware}
+    with ThreadPoolExecutor(max_workers=len(checks)) as pool:
+        futures = {key: pool.submit(checks[key]) for key in checks}
     result = []
     for key, title, description in COMPONENTS:
-        state, detail = checks[key]()
+        try:
+            state, detail = futures[key].result()
+        except Exception as error:  # one failing check must not blank the whole window
+            state, detail = "partial", f"status check failed: {error}"
         result.append({"id": key, "title": title, "description": description,
                        "state": state, "detail": detail})
     return result
@@ -127,6 +239,9 @@ def components():
 
 def apply(key):
     """Install one component. 'speaker' runs as the user; the others need root (pkexec)."""
+    if key == "battery":
+        print(component_battery()[1])
+        return 0
     if key == "speaker":
         code = subprocess.run(["systemctl", "--user", "enable", "--now", "dell-speaker-check.service"]).returncode
         if shutil.which("dell-speaker-check"):
@@ -158,6 +273,26 @@ def apply(key):
             print(f"Attaching {port} to gpsd ...", flush=True)
             return subprocess.run(["gpsdctl", "add", port]).returncode
         print("No u-blox receiver found; plug it in and run this step again.")
+        return 0
+    if key in APT_GROUPS:
+        print("Updating package lists ...", flush=True)
+        subprocess.run(["apt-get", "update", "-qq"], env=env)
+        print("Installing " + ", ".join(APT_GROUPS[key]) + " ...", flush=True)
+        code = subprocess.run(["apt-get", "install", "-y", *APT_GROUPS[key]], env=env).returncode
+        if code:
+            return code
+        if key in ("smartcard", "rfid"):
+            subprocess.run(["systemctl", "enable", "--now", "pcscd.socket"])
+            print("Readers seen by the system:")
+            print("\n".join(card_readers()) or "none yet (insert a card or check the reader)")
+        elif key == "lte":
+            subprocess.run(["systemctl", "enable", "--now", "ModemManager"])
+        return 0
+    if key == "firmware":
+        print("Refreshing firmware metadata ...", flush=True)
+        subprocess.run(["fwupdmgr", "refresh", "--force"])
+        subprocess.run(["fwupdmgr", "get-updates"])
+        print("To install what is listed, run: fwupdmgr update")
         return 0
     print("Checking the graphics driver ...", flush=True)
     return subprocess.run(["/usr/bin/dell-gpu-check", "--install"], env=env).returncode

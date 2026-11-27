@@ -283,10 +283,26 @@ class SetupAppTests(unittest.TestCase):
         with unittest.mock.patch.object(status, "component_touchscreen", return_value=("missing", "x")), \
              unittest.mock.patch.object(status, "component_speaker", return_value=("installed", "y")), \
              unittest.mock.patch.object(status, "component_gps", return_value=("partial", "z")), \
-             unittest.mock.patch.object(status, "component_graphics", return_value=("installed", "w")):
+             unittest.mock.patch.object(status, "component_graphics", return_value=("installed", "w")), \
+             unittest.mock.patch.object(status, "component_smartcard", side_effect=RuntimeError("boom")):
             items = status.components()
-        self.assertEqual([i["id"] for i in items], ["touchscreen", "speaker", "gps", "graphics"])
-        self.assertEqual([i["state"] for i in items], ["missing", "installed", "partial", "installed"])
+        ids = [i["id"] for i in items]
+        self.assertEqual(ids[:4], ["touchscreen", "speaker", "gps", "graphics"])
+        self.assertEqual({"smartcard", "rfid", "lte", "sdr", "battery", "firmware"}, set(ids[4:]))
+        self.assertEqual([i["state"] for i in items][:4], ["missing", "installed", "partial", "installed"])
+        self.assertEqual(items[ids.index("smartcard")]["state"], "partial")
+
+    def test_smartcard_needs_packages_then_reader(self):
+        with unittest.mock.patch.object(status, "installed", return_value=False):
+            self.assertEqual(status.component_smartcard()[0], "missing")
+        with unittest.mock.patch.object(status, "installed", return_value=True), \
+             unittest.mock.patch.object(status, "run", return_value=(0, "active")), \
+             unittest.mock.patch.object(status, "card_readers", return_value=[]):
+            self.assertEqual(status.component_smartcard()[0], "partial")
+        with unittest.mock.patch.object(status, "installed", return_value=True), \
+             unittest.mock.patch.object(status, "run", return_value=(0, "active")), \
+             unittest.mock.patch.object(status, "card_readers", return_value=["Broadcom Contactless"]):
+            self.assertEqual(status.component_smartcard()[0], "installed")
 
     def test_apply_rejects_unknown_component_and_non_root(self):
         with contextlib.redirect_stdout(io.StringIO()), unittest.mock.patch.object(status.os, "geteuid", return_value=1000):

@@ -278,6 +278,26 @@ class GpsNavigationTests(unittest.TestCase):
         self.assertEqual(gps.dop_quality(None)[0], "-")
 
 
+class CoordinateInputTests(unittest.TestCase):
+    def test_formats_are_recognised(self):
+        for text, kind in (("40.4656, -109.53", "Decimal degrees"),
+                           ("40°27.936'N 109°31.8'W", "Degrees + decimal minutes"),
+                           ("40 27 56.2 N, 109 31 48 W", "Degrees minutes seconds"),
+                           ("12T XK 24624 80474", "MGRS / US National Grid"),
+                           ("12T 624624 4480474", "UTM")):
+            lat, lon, found = gps.parse_coordinate(text)
+            self.assertEqual(found, kind)
+            self.assertAlmostEqual(lat, 40.4656, places=3)
+            self.assertAlmostEqual(lon, -109.53, places=3)
+
+    def test_mgrs_round_trip_and_rejects_text(self):
+        for lat, lon in ((-33.9, 151.2), (47.6, -122.3), (0.5, 10.2)):
+            got = gps.parse_coordinate(gps.to_mgrs(lat, lon))
+            self.assertAlmostEqual(got[0], lat, places=3)
+            self.assertAlmostEqual(got[1], lon, places=3)
+        self.assertIsNone(gps.parse_coordinate("123 Main Street, Vernal UT"))
+
+
 class OfflineRoutingTests(unittest.TestCase):
     TEXT = ("# header\n#\n"
             " 39.1\t -75.5\t      -1 \tWaypt#1\t0.000\t 0.00\t 0.00\t  0.0\t\t\t\n"

@@ -1623,6 +1623,19 @@ def run_app():
         stack.add_named(scrolled(tools), "TOOLS")
 
         win.connect("close-request", lambda _w: close() or False)
+
+        def on_key(_controller, keyval, _code, _state):
+            if keyval == Gdk.KEY_F11 or (keyval == Gdk.KEY_Escape and win.is_fullscreen()):
+                if win.is_fullscreen():
+                    win.unfullscreen()
+                else:
+                    win.fullscreen()
+                return True
+            return False
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", on_key)
+        win.add_controller(keys)
         refresh_waypoints()
         tab_buttons["LIVE"].set_active(True)
         win.present()

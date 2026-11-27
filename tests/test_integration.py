@@ -35,6 +35,7 @@ class AudioSafetyTests(unittest.TestCase):
 
     def test_unplugged_speaker_unmutes_and_sets_volume(self):
         with patch.object(audio, "jack_connected", side_effect=[False, False, False]), \
+                patch.object(audio, "switches", return_value=[audio.SWITCH]), \
                 patch.object(audio, "amixer", side_effect=[VOLUME, SWITCH_OFF, "", ""]) as mixer:
             self.assertIn("Unmuted", audio.check())
         self.assertEqual(mixer.call_args_list[-2].args, ("cset", audio.SWITCH, "on,on"))
@@ -42,6 +43,7 @@ class AudioSafetyTests(unittest.TestCase):
 
     def test_healthy_state_makes_no_writes(self):
         with patch.object(audio, "jack_connected", return_value=False), \
+                patch.object(audio, "switches", return_value=[audio.SWITCH]), \
                 patch.object(audio, "amixer",
                              side_effect=["  ; type=INTEGER,min=0,max=87,step=0\n  : values=87,87\n", SWITCH_ON]) as mixer:
             self.assertIn("healthy", audio.check())
@@ -49,18 +51,21 @@ class AudioSafetyTests(unittest.TestCase):
 
     def test_status_is_read_only(self):
         with patch.object(audio, "jack_connected", return_value=False), \
+                patch.object(audio, "switches", return_value=[audio.SWITCH]), \
                 patch.object(audio, "amixer", side_effect=[VOLUME, SWITCH_OFF]) as mixer:
             self.assertIn("muted", audio.check(status_only=True))
         self.assertEqual(mixer.call_count, 2)
 
     def test_insertion_before_write_prevents_change(self):
         with patch.object(audio, "jack_connected", side_effect=[False, True]), \
+                patch.object(audio, "switches", return_value=[audio.SWITCH]), \
                 patch.object(audio, "amixer", side_effect=[VOLUME, SWITCH_OFF]) as mixer:
             audio.check()
         self.assertEqual(mixer.call_count, 2)
 
     def test_insertion_during_write_restores_previous_settings(self):
         with patch.object(audio, "jack_connected", side_effect=[False, False, True]), \
+                patch.object(audio, "switches", return_value=[audio.SWITCH]), \
                 patch.object(audio, "amixer", side_effect=[VOLUME, SWITCH_OFF, "", "", "", ""]) as mixer:
             self.assertIn("restored previous", audio.check())
         self.assertEqual(mixer.call_args_list[-2].args, ("cset", audio.VOLUME, "12,14"))
@@ -78,6 +83,21 @@ class AudioSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "limits unavailable"):
                 audio.check()
         mixer.assert_called_once_with("cget", audio.VOLUME)
+
+
+class CardDiscoveryTests(unittest.TestCase):
+    CARDS = " 0 [HDMI           ]: HDA-Intel - HDA Intel HDMI\n                      HDA Intel HDMI at 0x1 irq 62\n 1 [PCH            ]: HDA-Intel - HDA Intel PCH\n                      HDA Intel PCH at 0x2 irq 63\n"
+
+    def test_finds_pch_card_number(self):
+        with patch.object(Path, "read_text", return_value=self.CARDS):
+            self.assertEqual(audio.card(), "1")
+
+    def test_discovers_headphone_and_headset_switches(self):
+        controls = ("numid=1,iface=MIXER,name='Headphone Playback Switch'\n"
+                    "numid=2,iface=MIXER,name='Headset Mic Capture Switch'\n"
+                    "numid=3,iface=MIXER,name='Master Playback Switch'\n")
+        with patch.object(audio, "amixer", return_value=controls):
+            self.assertEqual(len(audio.switches()), 2)
 
 
 class TouchSafetyTests(unittest.TestCase):

@@ -253,9 +253,9 @@ def run_app():
     for target in (gpsd_reader, hw_poller):
         threading.Thread(target=target, args=(state, stop), daemon=True).start()
 
-    root = tk.Tk()
+    root = tk.Tk(className="dell-gps-monitor")
     root.title("Dell Rugged GPS Monitor")
-    root.geometry("1040x700")
+    root.geometry("1060x780")
     mono = tkfont.Font(family="DejaVu Sans Mono", size=11)
     bold = tkfont.Font(family="DejaVu Sans Mono", size=11, weight="bold")
     big = tkfont.Font(family="DejaVu Sans", size=14, weight="bold")
@@ -275,11 +275,13 @@ def run_app():
     right.pack(side="right", fill="both", padx=8, pady=8)
     status = tk.Label(right, font=big, anchor="w")
     status.pack(fill="x")
-    body = tk.Label(right, font=mono, anchor="nw", justify="left")
+    body = tk.Text(right, font=mono, width=46, height=29, relief="flat", wrap="none",
+                   bg=root.cget("bg"), highlightthickness=0, cursor="arrow")
+    body.tag_configure("title", font=bold)
     body.pack(fill="x", pady=(6, 0))
     jam_title = tk.Label(right, text="Jamming indicator", font=bold, anchor="w")
     jam_title.pack(fill="x", pady=(10, 0))
-    jam_bar = tk.Canvas(right, width=420, height=26, bg="#eeeeee", highlightthickness=0)
+    jam_bar = tk.Canvas(right, width=420, height=29, bg="#eeeeee", highlightthickness=0)
     jam_bar.pack(fill="x")
     jam_text = tk.Label(right, font=mono, anchor="w", justify="left")
     jam_text.pack(fill="x")
@@ -334,21 +336,27 @@ def run_app():
         lines = []
         if mode >= 2 and "lat" in tpv and "lon" in tpv:
             for label, value in coordinate_lines(tpv["lat"], tpv["lon"], tpv.get("altHAE", tpv.get("alt"))):
-                lines.append(f"{label}:\n  {value}")
+                lines.append((label, value))
             if "eph" in tpv:
-                lines.append(f"Accuracy (est.):\n  ±{tpv['eph']:.1f} m horiz"
-                             + (f", ±{tpv['epv']:.1f} m vert" if "epv" in tpv else ""))
+                lines.append(("Accuracy (est.)", f"±{tpv['eph']:.1f} m horiz"
+                              + (f", ±{tpv['epv']:.1f} m vert" if "epv" in tpv else "")))
             if "speed" in tpv:
-                lines.append(f"Speed / track:\n  {tpv['speed'] * 3.6:.1f} km/h"
-                             + (f", {tpv['track']:.0f}°" if "track" in tpv else ""))
+                lines.append(("Speed / track", f"{tpv['speed'] * 3.6:.1f} km/h"
+                              + (f", {tpv['track']:.0f}°" if "track" in tpv else "")))
         if "time" in tpv:
-            for label, value in time_lines(parse_gps_utc(tpv["time"])):
-                lines.append(f"{label}:\n  {value}")
+            lines.extend(time_lines(parse_gps_utc(tpv["time"])))
         used = sum(1 for s in sky if s.get("used"))
-        lines.append(f"Satellites:\n  {used} used / {len(sky)} seen"
-                     + (f"   HDOP {dops['hdop']}" if "hdop" in dops else ""))
-        shown["text"] = "\n".join(lines)
-        body.config(text=shown["text"])
+        lines.append(("Satellites", f"{used} used / {len(sky)} seen"
+                      + (f"   HDOP {dops['hdop']}" if "hdop" in dops else "")))
+        text = "\n".join(f"{label}:\n  {value}" for label, value in lines)
+        if text != shown["text"]:
+            shown["text"] = text
+            body.config(state="normal")
+            body.delete("1.0", "end")
+            for label, value in lines:
+                body.insert("end", f"{label}:\n", "title")
+                body.insert("end", f"  {value}\n")
+            body.config(state="disabled")
         level, color = jam_level(hw.get("jam"))
         jam_bar.delete("all")
         if hw.get("jam") is not None:

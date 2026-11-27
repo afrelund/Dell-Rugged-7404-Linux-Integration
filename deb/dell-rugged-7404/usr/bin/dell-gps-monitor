@@ -638,11 +638,12 @@ def parse_route_text(text):
 def route_steps(points):
     """Collapse the route into 'road, distance' legs."""
     steps = []
-    for point in points[1:]:
+    for index, point in enumerate(points[1:], 1):
         if steps and steps[-1]["road"] == point["road"]:
             steps[-1]["km"] += point["segment_km"]
+            steps[-1]["last"] = index
         else:
-            steps.append({"road": point["road"], "km": point["segment_km"]})
+            steps.append({"road": point["road"], "km": point["segment_km"], "first": index - 1, "last": index})
     return steps
 
 
@@ -878,6 +879,10 @@ CSS = f"""
 .tab-button:checked {{ background: {AMBER}; color: #1a1200; }}
 .section {{ background: {AMBER}; color: #1a1200; font-weight: bold; padding: 4px 8px; }}
 .coord-row {{ padding: 3px 8px; min-height: 28px; }}
+.step-row {{ padding: 8px 10px; border-radius: 6px; }}
+.step-done {{ opacity: 0.45; }}
+.step-current {{ background: #1565c0; color: white; font-weight: bold; }}
+.step-next {{ background: #f2b01e; color: black; font-weight: bold; }}
 .coord-row-alt {{ background: alpha(currentColor, 0.09); }}
 .coord-row:active {{ background: alpha({AMBER}, 0.35); }}
 .row-title {{ font-weight: bold; font-family: monospace; }}
@@ -1175,7 +1180,12 @@ def run_app():
         sky_overlay = Gtk.Overlay(vexpand=True)
         sky_overlay.set_child(ui["sky_area"])
         sky_overlay.add_overlay(ui["status"])
-        left.append(sky_overlay)
+        top_stack = Gtk.Stack(vexpand=True)
+        top_stack.add_named(sky_overlay, "sky")
+        dir_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        top_stack.add_named(dir_panel, "dir")
+        ui["top_stack"], ui["dir_panel"] = top_stack, dir_panel
+        left.append(top_stack)
         legend = Gtk.Box(spacing=8)
         for name, color in CONSTELLATIONS.values():
             tag = Gtk.Label(use_markup=True)
@@ -1375,7 +1385,32 @@ def run_app():
                     elevation_area.queue_draw()
                 return False
 
+            def update_directions(lat, lon):
+                route, rows = nav["route"], ui.get("dir_rows")
+                if not route or not rows:
+                    return
+                nearest = min(range(len(route["points"])),
+                              key=lambda i: bearing_distance(lat, lon, route["points"][i]["lat"],
+                                                             route["points"][i]["lon"])[0])
+                current = next((i for i, st in enumerate(route["steps"]) if st["last"] >= nearest),
+                               len(rows) - 1)
+                if ui.get("dir_current") == current:
+                    return
+                ui["dir_current"] = current
+                for i, row in enumerate(rows):
+                    for name in ("step-done", "step-current", "step-next"):
+                        row.remove_css_class(name)
+                    row.add_css_class("step-done" if i < current else "step-current" if i == current
+                                      else "step-next" if i == current + 1 else "step-row")
+                    row.add_css_class("step-row")
+                adjustment = ui["dir_scroll"].get_vadjustment()
+                GLib.idle_add(lambda: adjustment.set_value(max(rows[current].get_allocation().y - 40, 0)) and False)
+
+            ui["update_directions"] = update_directions
+
             def clear_route():
+                ui["top_stack"].set_visible_child_name("sky")
+                ui["dir_rows"], ui["dir_current"] = None, None
                 ui["elevation"] = None
                 elevation_area.set_visible(False)
                 for layer in [route_layer] + [x for pair in off_road_layers for x in pair]:
@@ -1385,18 +1420,29 @@ def run_app():
                 ui["route_button"].set_label("Route to target")
 
             def show_directions(route):
-                dialog = Gtk.Window(title="Directions", modal=True, transient_for=ui["win"],
-                                    default_width=520, default_height=480)
-                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12,
-                              margin_bottom=12, margin_start=12, margin_end=12)
-                box.append(label(f"{route['km']:.1f} km · {format_duration(route['minutes'])} by car",
-                                 "status"))
-                steps = "\n".join(route["notes"] + [""] * bool(route["notes"]) + [f"{n}. {step['road']} – {step['km']:.1f} km"
-                                   for n, step in enumerate(route["steps"], 1)])
-                box.append(scrolled(label(steps, "mono", wrap=True)))
-                box.append(button("Close", dialog.destroy))
-                dialog.set_child(box)
-                dialog.present()
+                panel = ui["dir_panel"]
+                while panel.get_first_child():
+                    panel.remove(panel.get_first_child())
+                panel.append(label(f"DIRECTIONS  {route['km']:.1f} km · {format_duration(route['minutes'])}",
+                                   "bold"))
+                if route["notes"]:
+                    panel.append(label("\n".join(route["notes"]), "hint", wrap=True))
+                listing = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                rows = []
+                for n, step in enumerate(route["steps"], 1):
+                    row = label(f"{n}. {step['road']} \u2013 {step['km']:.1f} km", wrap=True, xalign=0)
+                    row.add_css_class("step-row")
+                    listing.append(row)
+                    rows.append(row)
+                ui["dir_rows"], ui["dir_current"] = rows, None
+                ui["dir_scroll"] = scrolled(listing)
+                ui["dir_scroll"].set_vexpand(True)
+                panel.append(ui["dir_scroll"])
+                panel.append(button("Back to satellites", lambda: ui["top_stack"].set_visible_child_name("sky")))
+                ui["top_stack"].set_visible_child_name("dir")
+                tpv = nav["tpv"]
+                update_directions(tpv.get("lat", route["points"][0]["lat"]),
+                                  tpv.get("lon", route["points"][0]["lon"]))
 
             def route_to_target():
                 if nav["route"] is not None:
@@ -1964,6 +2010,8 @@ def run_app():
             connected, device = state.connected, state.device
             history = list(state.jam_history)
         nav["tpv"] = tpv
+        if "lat" in tpv and "lon" in tpv and "update_directions" in ui:
+            ui["update_directions"](tpv["lat"], tpv["lon"])
         mode = tpv.get("mode", 0)
         ui["sky"], ui["history"] = sky, history
         if nav["message"]:

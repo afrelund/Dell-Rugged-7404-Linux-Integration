@@ -312,6 +312,7 @@ class OfflineRoutingTests(unittest.TestCase):
         steps = gps.route_steps(points)
         self.assertEqual([(s["road"], round(s["km"], 1)) for s in steps],
                          [("Main Street", 2.0), ("unnamed road", 3.0)])
+        self.assertEqual([(s["first"], s["last"]) for s in steps], [(0, 2), (2, 3)])
 
     def test_routing_without_a_downloaded_area_explains_itself(self):
         with patch.object(gps, "MAPS_DIR", "/nonexistent-maps"):

@@ -884,6 +884,8 @@ CSS = f"""
 .action {{ min-height: 48px; }}
 .mono {{ font-family: monospace; }}
 .hint {{ font-size: 9pt; opacity: 0.8; }}
+.map-drawer {{ background: alpha(@theme_bg_color, 0.95); padding: 6px; border-radius: 8px 0 0 8px; }}
+.map-drawer-tab {{ background: alpha(@theme_bg_color, 0.95); border-radius: 8px 0 0 8px; padding: 0; }}
 .status {{ font-size: 14pt; font-weight: bold; }}
 .bold {{ font-weight: bold; }}
 .wp-row {{ min-height: 44px; font-family: monospace; }}
@@ -1619,6 +1621,7 @@ def run_app():
                 ui["confirm_button"].set_label("Confirm destination" if purpose == "route"
                                                else "Confirm waypoint")
                 ui["target"].set_visible(on)
+                ui["map_drawer"][1].set_visible(not on)
                 ui["place_row"].set_visible(on)
                 ui["buttons_row"].set_visible(not on)
                 ui["tools_row"].set_visible(not on)
@@ -1660,21 +1663,42 @@ def run_app():
             ui["target"] = target
             mapp.append(overlay)
             mapp.append(elevation_area)
-            buttons = Gtk.Box(spacing=4, homogeneous=True)
-            buttons.append(button("Center on me", center_on_me))
-            buttons.append(button("Add waypoint", lambda: placing(True)))
-            ui["full_button"] = button("Full map", toggle_full)
-            buttons.append(ui["full_button"])
-            ui["buttons_row"] = buttons
-            mapp.append(buttons)
-            tools_row = Gtk.Box(spacing=4, homogeneous=True)
-            tools_row.append(button("Download County Area", area_dialog))
-            ui["route_button"] = button("Route to target", route_to_target)
-            tools_row.append(ui["route_button"])
+            drawer = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_LEFT,
+                                  valign=Gtk.Align.CENTER)
+            panel_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            panel_box.add_css_class("map-drawer")
+            drawer.set_child(panel_box)
+            tab = Gtk.Button(label="\u25C0", valign=Gtk.Align.CENTER)
+            tab.add_css_class("map-drawer-tab")
+            tab.set_size_request(40, 90)
+
+            def set_drawer(on):
+                drawer.set_reveal_child(on)
+                tab.set_label("\u25B6" if on else "\u25C0")
+
+            def in_panel(text, callback):
+                def run():
+                    set_drawer(False)
+                    callback()
+                item = button(text, run)
+                item.set_size_request(150, 48)
+                panel_box.append(item)
+                return item
+            in_panel("Center on me", center_on_me)
+            in_panel("Add waypoint", lambda: placing(True))
+            ui["route_button"] = in_panel("Route to target", route_to_target)
+            in_panel("Download County Area", area_dialog)
+            ui["full_button"] = in_panel("Full map", toggle_full)
+            tab.connect("clicked", lambda _b: set_drawer(not drawer.get_reveal_child()))
+            side = Gtk.Box(halign=Gtk.Align.END, valign=Gtk.Align.CENTER)
+            side.append(tab)
+            side.append(drawer)
+            overlay.add_overlay(side)
+            ui["map_drawer"] = (drawer, side)
             ui["route_note"] = label("", "bold", xalign=0.5)
-            tools_row.append(ui["route_note"])
-            ui["tools_row"] = tools_row
-            mapp.append(tools_row)
+            ui["buttons_row"] = ui["route_note"]
+            ui["tools_row"] = ui["route_note"]
+            mapp.append(ui["route_note"])
             place_row = Gtk.Box(spacing=4, homogeneous=True, visible=False)
             ui["confirm_button"] = button("Confirm waypoint", confirm_waypoint)
             place_row.append(ui["confirm_button"])
@@ -1682,7 +1706,7 @@ def run_app():
             ui["place_row"] = place_row
             mapp.append(place_row)
             mapp.append(label("OpenStreetMap, darkened in dark mode (needs internet; viewed tiles are cached). "
-                              "Drag to pan; zoom with the +/- buttons or the + and - keys. Tap Add waypoint, drag the map so the amber target is where you want it, then Confirm. Press and hold also adds one.",
+                              "Drag to pan; zoom with the +/- buttons or the + and - keys. Open the side tab and tap Add waypoint, drag the map so the amber target is where you want it, then Confirm. Press and hold also adds one.",
                               "hint", wrap=True))
         except (ImportError, ValueError):
             mapp.append(label("The map needs the package gir1.2-shumate-1.0:\n"

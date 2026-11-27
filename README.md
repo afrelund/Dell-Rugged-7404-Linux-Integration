@@ -16,7 +16,7 @@ Fixes for Ubuntu (tested on Ubuntu 26.04 LTS) on the Latitude 14 Rugged Extreme 
 2. Install it:
 
    ```sh
-   sudo apt install ./dell-rugged-7404_1.14.0_all.deb
+   sudo apt install ./dell-rugged-7404_1.15.0_all.deb
    ```
 
 3. Nothing is enabled automatically. Open **Dell Rugged 7404 Setup** from the app menu
@@ -45,7 +45,7 @@ The right side has five tabs:
 - **LIVE** – coordinates in every common format (click any value to copy it), time, satellites, and the JAMMING INDICATOR. A red JAMMING ALERT appears in the title (with a beep) when interference is strong.
 - **SIGNALS** – fix/DOP/accuracy dashboard, per-satellite signal-strength bars, and a jamming history graph.
 - **NAVIGATE** – compass with your heading, saved waypoints, and distance/bearing to a chosen target.
-- **MAP** – street map (OpenStreetMap, darkened in dark mode; needs internet) with your position, saved waypoints, "Add waypoint" (drag the map under an amber target, then confirm) or press-and-hold to add one, and a "Full map" mode that hides the satellite view. **Download County Area** saves a county's roads for offline use, and **Route to target** (off-road gaps follow trails/paths where mapped, drawn as red/purple dashes) lets you pick a saved waypoint, a point on the map, a typed grid coordinate (lat/lon, degrees-minutes-seconds, UTM or MGRS, auto-detected) or an address (address lookup needs internet), then draws a road route with turn-by-turn directions and an elevation chart under the map (gain/loss; elevation lookup needs internet), all computed locally (uses routino and osmium-tool; map tiles still need internet unless cached).
+- **MAP** – street map (OpenStreetMap, darkened in dark mode; needs internet) with your position, saved waypoints, a slide-out function drawer on the right edge (tap the arrow tab), "Add waypoint" (drag the map under an amber target, then confirm) or press-and-hold to add one, and a "Full map" mode that hides the satellite view. **Download County Area** saves a county's roads for offline use, and **Route to target** (off-road gaps follow trails/paths where mapped, drawn as red/purple dashes) lets you pick a saved waypoint, a point on the map, a typed grid coordinate (lat/lon, degrees-minutes-seconds, UTM or MGRS, auto-detected) or an address (address lookup needs internet), then draws a road route with turn-by-turn directions and an elevation chart under the map (gain/loss; elevation lookup needs internet), all computed locally (uses routino and osmium-tool; map tiles still need internet unless cached).
 - **TRACK** – log your position once per second to CSV, and export the session as GPX (with waypoints). Files go to `~/GPS-Tracks`.
 - **TOOLS** – sunrise/sunset/daylight for your position, and receiver setup (enable/disable Galileo, GLONASS, BeiDou; 1/2/5 Hz update rate). Setup buttons ask for confirmation and are not saved to the receiver's flash.
 

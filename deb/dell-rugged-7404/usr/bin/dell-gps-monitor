@@ -421,6 +421,7 @@ CSS = f"""
 .status {{ font-size: 14pt; font-weight: bold; }}
 .bold {{ font-weight: bold; }}
 .wp-row {{ min-height: 44px; font-family: monospace; }}
+.dark-map {{ filter: invert(1) hue-rotate(180deg) brightness(0.9); }}
 .map-marker {{ color: #d32f2f; font-size: 28pt; }}
 """
 
@@ -791,13 +792,10 @@ def run_app():
             from gi.repository import Shumate
             simple = Shumate.SimpleMap(vexpand=True, hexpand=True)
             registry = Shumate.MapSourceRegistry.new_with_defaults()
-            light_source = registry.get_by_id(Shumate.MAP_SOURCE_OSM_MAPNIK)
-            dark_source = Shumate.RasterRenderer.new_full_from_url(
-                "carto-dark", "CARTO Dark Matter", "© OpenStreetMap contributors © CARTO",
-                "https://carto.com/attributions", 0, 20, 256, Shumate.MapProjection.MERCATOR,
-                "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png")
-            simple.set_map_source(dark_source if theme["dark"] else light_source)
-            ui["map_sources"] = (light_source, dark_source, simple)
+            simple.set_map_source(registry.get_by_id(Shumate.MAP_SOURCE_OSM_MAPNIK))
+            if theme["dark"]:
+                simple.add_css_class("dark-map")
+            ui["map_widget"] = simple
             viewport = simple.get_viewport()
             viewport.set_zoom_level(3)
             layer = Shumate.MarkerLayer.new(viewport)
@@ -819,7 +817,7 @@ def run_app():
             simple.add_controller(drag)
             mapp.append(simple)
             mapp.append(button("Center on my position", center_on_me))
-            mapp.append(label("Street map from OpenStreetMap, dark style in dark mode (needs internet; viewed tiles are cached). "
+            mapp.append(label("Street map from OpenStreetMap, darkened in dark mode (needs internet; viewed tiles are cached). "
                               "Pinch or use +/- to zoom, drag to pan.", "hint", wrap=True))
         except (ImportError, ValueError):
             mapp.append(label("The map needs the package gir1.2-shumate-1.0:\n"
@@ -982,9 +980,11 @@ def run_app():
         if dark != theme["dark"]:
             theme["dark"] = dark
             pal.update(DARK if dark else LIGHT)
-            if "map_sources" in ui:
-                light_source, dark_source, simple = ui["map_sources"]
-                simple.set_map_source(dark_source if dark else light_source)
+            if "map_widget" in ui:
+                if dark:
+                    ui["map_widget"].add_css_class("dark-map")
+                else:
+                    ui["map_widget"].remove_css_class("dark-map")
             redraw_all()
         return True
 

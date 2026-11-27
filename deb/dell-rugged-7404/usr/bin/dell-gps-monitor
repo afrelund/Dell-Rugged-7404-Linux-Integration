@@ -99,6 +99,130 @@ def to_mgrs(lat, lon, digits=5):
             f"{int(easting % 100000 // scale):0{digits}d} {int(northing % 100000 // scale):0{digits}d}")
 
 
+def from_utm(zone, northern, easting, northing):
+    """Inverse of to_utm (Krueger series) -> (lat, lon)."""
+    a, f = 6378137.0, 1 / 298.257223563
+    n = f / (2 - f)
+    big_a = a / (1 + n) * (1 + n ** 2 / 4 + n ** 4 / 64)
+    beta = [n / 2 - 2 * n ** 2 / 3 + 37 * n ** 3 / 96,
+            n ** 2 / 48 + n ** 3 / 15,
+            17 * n ** 3 / 480]
+    delta = [2 * n - 2 * n ** 2 / 3 - 2 * n ** 3,
+             7 * n ** 2 / 3 - 8 * n ** 3 / 5,
+             56 * n ** 3 / 15]
+    xi = (northing - (0 if northern else 10000000)) / (0.9996 * big_a)
+    eta = (easting - 500000) / (0.9996 * big_a)
+    xi0, eta0 = xi, eta
+    for j, coefficient in enumerate(beta, start=1):
+        xi0 -= coefficient * math.sin(2 * j * xi) * math.cosh(2 * j * eta)
+        eta0 -= coefficient * math.cos(2 * j * xi) * math.sinh(2 * j * eta)
+    chi = math.asin(math.sin(xi0) / math.cosh(eta0))
+    phi = chi + sum(c * math.sin(2 * j * chi) for j, c in enumerate(delta, start=1))
+    lon = math.radians((zone - 1) * 6 - 180 + 3) + math.atan2(math.sinh(eta0), math.cos(xi0))
+    return math.degrees(phi), math.degrees(lon)
+
+
+def from_mgrs(zone, band, column, row, easting, northing):
+    """MGRS parts (numeric easting/northing within the 100 km square, metres) -> (lat, lon)."""
+    column_index = ("ABCDEFGH", "JKLMNPQR", "STUVWXYZ")[(zone - 1) % 3].find(column)
+    row_index = "ABCDEFGHJKLMNPQRSTUV".find(row)
+    if column_index < 0 or row_index < 0 or band not in "CDEFGHJKLMNPQRSTUVWX":
+        raise ValueError("bad MGRS letters")
+    full_easting = (column_index + 1) * 100000 + easting
+    base = ((row_index - (5 if zone % 2 == 0 else 0)) % 20) * 100000 + northing
+    band_lat = -80 + 8 * "CDEFGHJKLMNPQRSTUVWX".index(band)
+    centre = (zone - 1) * 6 - 180 + 3
+    floor = to_utm(band_lat, centre)[3] - 100000
+    full_northing = base
+    while full_northing < floor:
+        full_northing += 2000000
+    lat, lon = from_utm(zone, band >= "N", full_easting, full_northing)
+    return lat, lon
+
+
+def parse_coordinate(text):
+    """Recognise MGRS, UTM, or lat/lon (decimal, deg-decimal-minutes, DMS). Returns (lat, lon, kind) or None."""
+    text = text.strip().upper()
+    compact = re.sub(r"[\s,]+", "", text)
+    match = re.fullmatch(r"(\d{1,2})([C-HJ-NP-X])([A-HJ-NP-Z])([A-HJ-NP-V])((?:\d\d)*)", compact)
+    if match and 1 <= int(match.group(1)) <= 60:
+        digits = match.group(5)
+        half = len(digits) // 2
+        if half <= 5:
+            scale = 10 ** (5 - half)
+            e = int(digits[:half] or 0) * scale + (scale // 2 if half else 50000)
+            n = int(digits[half:] or 0) * scale + (scale // 2 if half else 50000)
+            try:
+                lat, lon = from_mgrs(int(match.group(1)), match.group(2), match.group(3),
+                                     match.group(4), e, n)
+            except ValueError:
+                return None
+            if -90 <= lat <= 90:
+                return lat, lon, "MGRS / US National Grid"
+    match = re.fullmatch(r"(\d{1,2})\s*([C-HJ-NP-X])\s+(\d{5,7}(?:\.\d+)?)\s*M?E?[\s,]+(\d{6,8}(?:\.\d+)?)\s*M?N?",
+                         text)
+    if match and 1 <= int(match.group(1)) <= 60:
+        lat, lon = from_utm(int(match.group(1)), match.group(2) >= "N",
+                            float(match.group(3)), float(match.group(4)))
+        return lat, lon, "UTM"
+    tokens = re.findall(r"[NSEW]|[+-]?\d+(?:\.\d+)?|[+-]?\.\d+", re.sub(r"[°º'′\"″]|DEG", " ", text))
+    groups, current = [], {"nums": [], "letter": None}
+    for token in tokens:
+        if token in "NSEW":
+            if current["letter"] is None and current["nums"]:
+                current["letter"] = token
+                groups.append(current)
+                current = {"nums": [], "letter": None}
+            elif current["letter"] is None:
+                current["letter"] = token
+            else:
+                groups.append(current)
+                current = {"nums": [], "letter": token}
+        else:
+            current["nums"].append(token)
+    if current["nums"] or current["letter"]:
+        groups.append(current)
+    if not any(g["letter"] for g in groups):
+        numbers = [t for g in groups for t in g["nums"]]
+        if len(numbers) not in (2, 4, 6):
+            return None
+        half = len(numbers) // 2
+        groups = [{"nums": numbers[:half], "letter": None}, {"nums": numbers[half:], "letter": None}]
+    if len(groups) != 2 or any(not g["nums"] or len(g["nums"]) > 3 for g in groups):
+        return None
+    if len({len(g["nums"]) for g in groups}) != 1:
+        return None
+    values = []
+    for g in groups:
+        parts = [float(t) for t in g["nums"]]
+        magnitude = abs(parts[0]) + sum(p / 60 ** i for i, p in enumerate(parts[1:], start=1))
+        negative = g["nums"][0].startswith("-") or g["letter"] in ("S", "W")
+        values.append((-magnitude if negative else magnitude, g["letter"]))
+    (first, first_letter), (second, second_letter) = values
+    if first_letter in ("E", "W") or second_letter in ("N", "S"):
+        first, second = second, first
+        first_letter, second_letter = second_letter, first_letter
+    if not (-90 <= first <= 90 and -180 <= second <= 180):
+        return None
+    kind = {1: "Decimal degrees", 2: "Degrees + decimal minutes", 3: "Degrees minutes seconds"}[len(groups[0]["nums"])]
+    return first, second, kind
+
+
+def geocode_address(query):
+    """Look an address up on OpenStreetMap Nominatim (needs internet) -> [(name, lat, lon)]."""
+    import urllib.parse
+    import urllib.request
+    url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
+        {"q": query, "format": "json", "limit": 5})
+    request = urllib.request.Request(url, headers={"User-Agent": "dell-rugged-7404-gps-monitor"})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            found = json.load(response)
+    except OSError as error:
+        raise RouteError(f"Address lookup needs an internet connection ({error}).")
+    return [(item["display_name"], float(item["lat"]), float(item["lon"])) for item in found]
+
+
 def maidenhead(lat, lon):
     lon, lat = lon + 180, lat + 90
     text = chr(65 + int(lon // 20)) + chr(65 + int(lat // 10))
@@ -1089,7 +1213,7 @@ def run_app():
 
             def choose_destination():
                 dialog = Gtk.Window(title="Route to…", modal=True, transient_for=ui["win"],
-                                    default_width=460, default_height=420)
+                                    default_width=520, default_height=600)
                 box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12,
                               margin_bottom=12, margin_start=12, margin_end=12)
                 box.append(label("Choose a destination", "bold"))
@@ -1104,6 +1228,49 @@ def run_app():
                     dialog.destroy()
                     placing(True, "route")
                 box.append(button("Pick a point on the map", pick_on_map))
+                box.append(label("ADDRESS OR GRID COORDINATE", "bold"))
+                search = Gtk.Entry(placeholder_text="Address, lat/lon, DMS, UTM or MGRS")
+                search.set_size_request(-1, 48)
+                box.append(search)
+                found = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+
+                def go_to(lat, lon):
+                    dialog.destroy()
+                    start_route(lat, lon)
+
+                def show_results(results, note):
+                    child = found.get_first_child()
+                    while child:
+                        following = child.get_next_sibling()
+                        found.remove(child)
+                        child = following
+                    found.append(label(note, "hint", wrap=True))
+                    for name, lat, lon in results:
+                        found.append(button(f"{name}\n{lat:.5f}, {lon:.5f}",
+                                            lambda la=lat, lo=lon: go_to(la, lo)))
+
+                def lookup(*_):
+                    query = search.get_text().strip()
+                    if not query:
+                        return
+                    parsed = parse_coordinate(query)
+                    if parsed:
+                        lat, lon, kind = parsed
+                        show_results([(f"Route to {kind} point", lat, lon)], f"Recognised as {kind}.")
+                        return
+                    show_results([], "Looking up address…")
+
+                    def work():
+                        try:
+                            results, note = geocode_address(query), ""
+                        except Exception as error:
+                            results, note = [], str(error)
+                        GLib.idle_add(show_results, results,
+                                      note or ("Pick the match:" if results else "No address found."))
+                    threading.Thread(target=work, daemon=True).start()
+                search.connect("activate", lookup)
+                box.append(button("Find", lookup))
+                box.append(found)
                 box.append(label("WAYPOINTS", "bold"))
                 names = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
                 if not waypoints:

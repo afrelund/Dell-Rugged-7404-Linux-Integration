@@ -278,6 +278,31 @@ class GpsNavigationTests(unittest.TestCase):
         self.assertEqual(gps.dop_quality(None)[0], "-")
 
 
+class OfflineRoutingTests(unittest.TestCase):
+    TEXT = ("# header\n#\n"
+            " 39.1\t -75.5\t      -1 \tWaypt#1\t0.000\t 0.00\t 0.00\t  0.0\t\t\t\n"
+            " 39.2\t -75.5\t   1*\tJunct\t1.500\t 2.00\t 1.50\t  2.0\t 80\t  74\tMain Street\n"
+            " 39.3\t -75.5\t   2*\tJunct\t0.500\t 1.00\t 2.00\t  3.0\t 80\t  74\tMain Street\n"
+            " 39.4\t -75.5\t   3 \tJunct\t3.000\t 4.00\t 5.00\t  7.0\t 80\t  74\t(null)\n")
+
+    def test_route_text_is_parsed_into_legs(self):
+        points = gps.parse_route_text(self.TEXT)
+        self.assertEqual(len(points), 4)
+        self.assertEqual(points[-1]["total_km"], 5.0)
+        steps = gps.route_steps(points)
+        self.assertEqual([(s["road"], round(s["km"], 1)) for s in steps],
+                         [("Main Street", 2.0), ("unnamed road", 3.0)])
+
+    def test_routing_without_a_downloaded_area_explains_itself(self):
+        with patch.object(gps, "MAPS_DIR", "/nonexistent-maps"):
+            with self.assertRaises(gps.RouteError):
+                gps.compute_route(1, 2, 3, 4)
+
+    def test_every_state_has_a_geofabrik_slug(self):
+        self.assertEqual(gps.geofabrik_slug(gps.STATES["33"]), "new-hampshire")
+        self.assertEqual(gps.format_duration(75), "1 h 15 min")
+
+
 class SetupAppTests(unittest.TestCase):
     def test_components_report_state_for_each_item(self):
         with unittest.mock.patch.object(status, "component_touchscreen", return_value=("missing", "x")), \

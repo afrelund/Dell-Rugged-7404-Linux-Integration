@@ -367,5 +367,16 @@ class SetupAppTests(unittest.TestCase):
         self.assertIn("min-height: 48px", css)
 
 
+class ElevationProfileTests(unittest.TestCase):
+    def test_sampling_and_stats(self):
+        path = [(40.0, -109.0), (40.0, -108.99), (40.01, -108.99)]
+        samples = gps.sample_path(path, 10)
+        self.assertEqual(len(samples), 10)
+        self.assertAlmostEqual(samples[0][0], 0)
+        self.assertAlmostEqual(samples[-1][1], 40.01)
+        stats = gps.profile_stats([(0, 100), (1, 150), (2, 120), (3, 130)])
+        self.assertEqual((stats["gain"], stats["loss"], stats["min"], stats["max"]), (60, 30, 100, 150))
+
+
 if __name__ == "__main__":
     unittest.main()
